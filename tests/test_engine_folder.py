@@ -46,6 +46,22 @@ class Base(unittest.TestCase):
 
 
 class Folder(Base):
+    def test_engine_location_cannot_be_redirected_after_selection(self):
+        chosen = self.root / "chosen"
+        engine.choose(str(chosen))
+        other = ready(self.root / "other-engine")
+        try:
+            chosen.symlink_to(other, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symbolic links are unavailable: {error}")
+        self.assertIsNone(engine.where())
+        with mock.patch.object(engine, "_uv", return_value="uv") as uv, mock.patch.object(engine, "_run"):
+            with self.assertRaisesRegex(ValueError, "saved folder changed"):
+                engine.install()
+        uv.assert_not_called()
+        engine.uninstall()
+        self.assertTrue((other / engine.MARK).is_file())
+
     def test_beside_the_library(self):
         self.assertEqual(engine.status()["path"], str(self.app / "engine"))
         self.library = self.root / "D" / "TextFold"   # moved in Settings
