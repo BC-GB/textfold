@@ -1,4 +1,5 @@
 import http.server
+import base64
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,9 @@ name = "codex.exe" if os.name == "nt" else "codex"
 (executable,) = [p for p in npm_modules.rglob(name) if p.is_file() and "vendor" in p.parts]
 seen = []
 reply = '{"ok": true}'
+image_path = None
+image_receipts = []
+example_png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=")
 
 class Fixture(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -35,6 +39,14 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         seen.append([tool.get("name", tool.get("type", "")) for tool in payload.get("tools", [])])
         item = {"type":"message","id":"msg_fixture","role":"assistant","status":"completed",
                 "content":[{"type":"output_text","text":reply,"annotations":[]}]}
+        if image_path:
+            receipt = next((part for part in payload.get("input", [])
+                            if part.get("type") == "function_call_output" and part.get("call_id") == "fixture_image"), None)
+            if receipt is None:
+                item = {"type": "function_call", "id": "fc_fixture", "call_id": "fixture_image",
+                        "name": "view_image", "status": "completed", "arguments": json.dumps({"path": str(image_path)})}
+            else:
+                image_receipts.append(receipt.get("output"))
         messages = [
             {"type":"response.created","response":{"id":"resp_fixture","status":"in_progress","output":[]}},
             {"type":"response.output_item.added","output_index":0,"item":item},
@@ -60,8 +72,16 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as server:
         schema = cwd / "schema.json"
         schema.write_text('{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}')
         route = f'model_providers.fixture={{name="Fixture",base_url="http://127.0.0.1:{server.server_port}/v1",wire_api="responses",requires_openai_auth=false}}'
-        for use_web in (False, True):
+        sibling = cwd.parent / f"{cwd.name}-isolated-profile"
+        sibling.mkdir()
+        inner_image = cwd / "sample.png"
+        outer_image = sibling / "sample.png"
+        inner_image.write_bytes(example_png)
+        outer_image.write_bytes(example_png)
+        for use_web, path in ((False, None), (True, None), (False, inner_image), (False, outer_image)):
             seen.clear()
+            image_receipts.clear()
+            image_path = path
             opts = list(CODEX_DOCUMENT_CONFIG) + ['model_provider="fixture"',route,'model_reasoning_effort="low"']
             if not use_web:
                 opts.append('web_search="disabled"')
@@ -81,8 +101,22 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as server:
             tools = {tool for request in seen for tool in request}
             assert not tools.intersection({"shell", "shell_command", "exec_command", "write_stdin", "create_goal", "update_goal"})
             assert any(tool.startswith("web_search") for tool in tools) == use_web
+            if path:
+                assert len(image_receipts) == 1
+                receipt = json.dumps(image_receipts[0])
+                received_image = "data:image/" in receipt
+                print("Fixture in scratch:", path == inner_image, "image returned:", received_image, flush=True)
+                if path == outer_image:
+                    assert not received_image
+                    print("Outside fixture response:", receipt[:220].replace(str(outer_image), "(fixture)"), flush=True)
+        outer_image.unlink()
+        sibling.rmdir()
 
     server.shutdown()
+
+if os.name == "nt":
+    # The native file tool above exercises the Windows path through the actual Codex generation.
+    raise SystemExit(0)
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
@@ -111,9 +145,8 @@ except OSError:
 else:
     raise SystemExit('The profile allowed a read of the outside fixture')
 """
-    backend = ["-c", 'windows.sandbox="elevated"'] if os.name == "nt" else []
     subprocess.run([str(executable), "sandbox", "-P", "textfold-document", "-C", str(scratch),
-                    "-c", profile, "-c", "permissions.textfold-document.network.enabled=false", *backend,
+                    "-c", profile, "-c", "permissions.textfold-document.network.enabled=false",
                     "--", sys.executable, "-I", "-S", "-c", check, str(outside)],
                    timeout=60, check=True)
 print("The scratch fixture was read-only and the separate fixture was denied.")
