@@ -101,7 +101,7 @@ class Images:
                 self.budget.take(len(data))
                 return (data if data[:4] != b"<!DO" and data[:5] != b"<html" else None), path.rsplit("/", 1)[-1] or "image"
             data, _, headers = urlread(urllib.request.Request(src, headers=UA), 20, MAX_IMG, again=(1,),
-                                       open_url=self.open_url or PUBLIC.open, budget=self.budget)   # (a page
+                                       open_url=self.open_url, budget=self.budget)   # (a page
             # has many pictures, and one missed is tried again: one try more each)
             ctype = (headers.get("Content-Type") or "").split(";")[0].strip()
             if not ctype.startswith("image/"):

@@ -60,7 +60,7 @@ DROPPED = urllib.error.URLError(ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_R
 class Tries(unittest.TestCase):
     def run_with(self, *answers, **kw):
         waits = []
-        with mock.patch("urllib.request.urlopen", side_effect=list(answers)) as opened, \
+        with mock.patch.object(fetch.PUBLIC, "open", side_effect=list(answers)) as opened, \
                 mock.patch("textfold.fetch.time.sleep", waits.append):
             try:
                 return fetch.urlread("https://arxiv.org/html/2512.23916", **kw), waits, opened.call_count
@@ -70,6 +70,13 @@ class Tries(unittest.TestCase):
     def test_a_dropped_connection_is_asked_again(self):
         got, waits, n = self.run_with(DROPPED, ConnectionResetError(54, "reset"), Response())
         self.assertEqual((got[0], got[1], waits, n), (b"<html>ok</html>", "https://arxiv.org/html/2512.23916v2", [1, 2], 3))
+
+    def test_default_downloads_use_the_public_destination_guard(self):
+        with mock.patch("textfold.web_requests._addresses", return_value=("192.0.2.9",)), \
+                mock.patch("textfold.web_requests._manager") as connection:
+            with self.assertRaises(fetch.DestinationDenied):
+                fetch.urlread("https://document.example/resource")
+        connection.assert_not_called()
 
     def test_a_body_cut_short_or_a_timeout_too(self):
         got, waits, _ = self.run_with(Response(cut=True), TimeoutError("timed out"), Response())

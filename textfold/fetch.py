@@ -124,10 +124,11 @@ def urlread(req, timeout=60, limit=MAX_SOURCE, check=None, busy=BUSY, again=AGAI
         raise ValueError("invalid response limit")
     if isinstance(req, str):
         req = urllib.request.Request(req, headers=UA)
+    opener = PUBLIC.open if open_url is None else open_url
     deadline = time.monotonic() + timeout
     for i in range(len(again) + 1):
         try:
-            with (open_url or urllib.request.urlopen)(req, timeout=_remaining(deadline)) as r:
+            with opener(req, timeout=_remaining(deadline)) as r:
                 if check:
                     check(r)
                 return _read_body(r, limit, deadline, truncate, budget), r.geturl(), r.headers

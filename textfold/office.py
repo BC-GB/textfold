@@ -41,11 +41,11 @@ OPF = "{http://www.idpf.org/2007/opf}"
 IN, OUT, DIN, DOUT = chr(0xE000), chr(0xE001), chr(0xE002), chr(0xE003)
 TEXTUTIL = {"doc", "rtf", "odt"}   # read through macOS's textutil, which writes them as .docx
 MAX_ROWS, MAX_COLS = 1000, 50      # of a sheet: a table longer than this is not read as a text
-DOCX_MAX_MEMBERS = 10_000
-DOCX_MAX_MEMBER_BYTES = 128 * 1024 * 1024
-DOCX_MAX_TOTAL_BYTES = 256 * 1024 * 1024
-DOCX_MAX_COMPRESSION_RATIO = 100
-DOCX_RATIO_MIN_BYTES = 1024 * 1024   # small XML parts may compress unusually well without consuming much
+ARCHIVE_MAX_MEMBERS = 10_000
+ARCHIVE_MAX_MEMBER_BYTES = 128 * 1024 * 1024
+ARCHIVE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+ARCHIVE_MAX_COMPRESSION_RATIO = 100
+ARCHIVE_RATIO_MIN_BYTES = 1024 * 1024   # small XML parts may compress unusually well without consuming much
 DOCX_MAX_MATH_BYTES = 16 * 1024 * 1024
 DOCX_COPY_BYTES = 1024 * 1024
 DOCX_SPOOL_BYTES = 8 * 1024 * 1024
@@ -447,18 +447,18 @@ def _core(z):
 
 # ── Word ──
 
-def _docx_members(z):
-    """A DOCX's members after its declared expansion has passed the document budget."""
+def _archive_members(z):
+    """Office archive members after their declared expansion has passed the document budget."""
     members = z.infolist()
-    if len(members) > DOCX_MAX_MEMBERS:
+    if len(members) > ARCHIVE_MAX_MEMBERS:
         raise ValueError("bad-file")
     total = 0
     for info in members:
         if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
             raise ValueError("bad-file")
         total += info.file_size
-        ratio_bytes = max(DOCX_RATIO_MIN_BYTES, info.compress_size * DOCX_MAX_COMPRESSION_RATIO)
-        if info.file_size > DOCX_MAX_MEMBER_BYTES or total > DOCX_MAX_TOTAL_BYTES or info.file_size > ratio_bytes:
+        ratio_bytes = max(ARCHIVE_RATIO_MIN_BYTES, info.compress_size * ARCHIVE_MAX_COMPRESSION_RATIO)
+        if info.file_size > ARCHIVE_MAX_MEMBER_BYTES or total > ARCHIVE_MAX_TOTAL_BYTES or info.file_size > ratio_bytes:
             raise ValueError("bad-file")
     return members
 
@@ -466,12 +466,12 @@ def _docx_members(z):
 def _copy_docx_member(z, info, target, total):
     """Stream one member, enforcing the same budgets against bytes actually produced by the decompressor."""
     size = 0
-    ratio_bytes = max(DOCX_RATIO_MIN_BYTES, info.compress_size * DOCX_MAX_COMPRESSION_RATIO)
+    ratio_bytes = max(ARCHIVE_RATIO_MIN_BYTES, info.compress_size * ARCHIVE_MAX_COMPRESSION_RATIO)
     with z.open(info) as source:
         while chunk := source.read(DOCX_COPY_BYTES):
             size += len(chunk)
             total += len(chunk)
-            if size > DOCX_MAX_MEMBER_BYTES or total > DOCX_MAX_TOTAL_BYTES or size > ratio_bytes:
+            if size > ARCHIVE_MAX_MEMBER_BYTES or total > ARCHIVE_MAX_TOTAL_BYTES or size > ratio_bytes:
                 raise ValueError("bad-file")
             target.write(chunk)
     if size != info.file_size:
@@ -486,11 +486,11 @@ def _with_math(path):
     try:
         with zipfile.ZipFile(path) as zin, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
             total = written = 0
-            for info in _docx_members(zin):
+            for info in _archive_members(zin):
                 target_info = copy.copy(info)
                 with zout.open(target_info, "w") as target:
                     if info.filename not in maths:
-                        if written + info.file_size > DOCX_MAX_TOTAL_BYTES:
+                        if written + info.file_size > ARCHIVE_MAX_TOTAL_BYTES:
                             raise ValueError("bad-file")
                         total, size = _copy_docx_member(zin, info, target, total)
                         written += size
@@ -512,7 +512,7 @@ def _with_math(path):
                         except Exception:
                             pass   # its formulas are left out, as mammoth leaves them
                     written += len(raw)
-                    if len(raw) > DOCX_MAX_MATH_BYTES or written > DOCX_MAX_TOTAL_BYTES:
+                    if len(raw) > DOCX_MAX_MATH_BYTES or written > ARCHIVE_MAX_TOTAL_BYTES:
                         raise ValueError("bad-file")
                     target.write(raw)
     except Exception:
@@ -653,8 +653,7 @@ def _slide_text(doc, body, bulleted):
     flush()
 
 
-def _pptx(path, doc):
-    z = zipfile.ZipFile(path)
+def _pptx(z, doc):
     doc.meta.update(_core(z))
     prels = _rels(z, "ppt/presentation.xml")
     order = [prels.get(s.get(REL + "id"), (None,))[0] for s in _xml(z.read("ppt/presentation.xml")).iter(PML + "sldId")]
@@ -741,27 +740,27 @@ def _grid(rows):
     return f"<table><thead>{head}</thead><tbody>{body}</tbody></table>"
 
 
-def _xlsx(path, doc):
+def _xlsx(book, doc):
     import openpyxl
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    p = wb.properties
-    doc.meta.update({"title": p.title or "", "authors": [p.creator] if p.creator else [],
-                     "created_at": p.created.isoformat() if p.created else ""})
-    sheets = []
-    for ws in wb.worksheets:
-        rows = []
-        for r in ws.iter_rows(values_only=True):
-            rows.append(r)
-            if len(rows) > MAX_ROWS * 2:   # (blank rows among them are left out later)
-                break
-        table = _grid(rows)
-        if table:
-            sheets.append((ws.title, table))
+    wb = openpyxl.load_workbook(book, read_only=True, data_only=True)
+    try:
+        p = wb.properties
+        doc.meta.update({"title": p.title or "", "authors": [p.creator] if p.creator else [],
+                         "created_at": p.created.isoformat() if p.created else ""})
+        sheets = []
+        row_limit = MAX_ROWS * 2 + 1  # blank rows are dropped when the table is drawn
+        for ws in wb.worksheets:
+            rows = list(ws.iter_rows(max_col=min(ws.max_column or MAX_COLS, MAX_COLS),
+                                     max_row=min(ws.max_row or row_limit, row_limit), values_only=True))
+            table = _grid(rows)
+            if table:
+                sheets.append((ws.title, table))
+    finally:
+        wb.close()
     for name, table in sheets:
         if len(sheets) > 1:
             doc.add("paragraph_title", _escape(name), level=2)
         doc.add("table", table)
-    wb.close()
 
 
 def _decode(data):
@@ -879,8 +878,7 @@ def _mhtml(path, doc):
     _page(page, doc, files, url if url and re.match(r"https?://", url) else None)
 
 
-def _epub(path, doc):
-    z = zipfile.ZipFile(path)
+def _epub(z, doc):
     rootfile = _xml(z.read("META-INF/container.xml")).find(".//{urn:oasis:names:tc:opendocument:xmlns:container}rootfile")
     opf_path = rootfile.get("full-path")
     opf, base = _xml(z.read(opf_path)), posixpath.dirname(opf_path)
@@ -952,18 +950,23 @@ def convert(file, out, ext=None):
     try:
         if ext == "docx":
             _docx(file, doc)
-        elif ext == "pptx":
-            _pptx(file, doc)
+        elif ext in ("pptx", "epub"):
+            with zipfile.ZipFile(file) as archive:
+                _archive_members(archive)
+                reader = _pptx if ext == "pptx" else _epub
+                reader(archive, doc)
         elif ext == "xlsx":
-            _xlsx(file, doc)
+            with Path(file).open("rb") as book:
+                with zipfile.ZipFile(book) as archive:
+                    _archive_members(archive)
+                book.seek(0)
+                _xlsx(book, doc)
         elif ext in ("csv", "tsv"):
             _csv(file, doc, ext)
         elif ext in ("html", "htm"):
             _page(Path(file).read_bytes(), doc)
         elif ext in ("mhtml", "mht"):
             _mhtml(file, doc)
-        elif ext == "epub":
-            _epub(file, doc)
         elif ext in TEXTUTIL and reads(ext):
             _textutil(file, doc)
         else:
