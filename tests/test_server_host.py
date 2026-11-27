@@ -7,6 +7,7 @@ Run from the repo root:
     python3 -m unittest discover tests
 """
 from _local_test import AUTH, KEY, urlopen
+import base64
 import http.client
 import json
 import os
@@ -100,10 +101,10 @@ class Rebinding(unittest.TestCase):
         cls.proc.wait(timeout=10)
         cls.tmp.cleanup()
 
-    def ask(self, method, path, host, body=None, origin=None, *, headers=None):
+    def ask(self, method, path, host, body=None, origin=None, *, headers=None, authorization=None):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         c.putrequest(method, path, skip_host=True)
-        c.putheader("Authorization", AUTH["Authorization"])
+        c.putheader("Authorization", authorization or AUTH["Authorization"])
         if host is not None:
             c.putheader("Host", host)
         if origin:
@@ -160,6 +161,17 @@ class Rebinding(unittest.TestCase):
             self.assertEqual(status, 200, host)
             self.assertIn("private draft".encode(), data)
         self.assertEqual(self.ask("GET", "/api/papers", None)[0], 421)   # (no name at all: not a browser's)
+
+    def test_electron_can_open_a_top_level_reader_from_its_splash(self):
+        host = f"127.0.0.1:{self.port}"
+        headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+        for path in ("/", f"/p/{self.pid}"):
+            self.assertEqual(self.ask("GET", path, host, headers=headers)[0], 200)
+        self.assertEqual(self.ask("GET", "/api/papers", host, headers=headers)[0], 403)
+        frame = {**headers, "Sec-Fetch-Dest": "iframe"}
+        self.assertEqual(self.ask("GET", "/", host, headers=frame)[0], 403)
+        basic = "Basic " + base64.b64encode(f"textfold:{KEY}".encode()).decode()
+        self.assertEqual(self.ask("GET", "/", host, headers=headers, authorization=basic)[0], 403)
 
 
 if __name__ == "__main__":

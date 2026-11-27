@@ -664,7 +664,7 @@ def from_other_site(headers):
     if site and site not in ("same-origin", "none"):
         return True
     here = "http://" + headers["Host"]
-    return any(value and not llm_openai.same_origin(value, here)
+    return any(not llm_openai.same_origin(value, here)
                for name in ("Origin", "Referer") if (value := headers.get(name)))
 
 
@@ -726,8 +726,14 @@ def make_handler(jobs, access_key):
             if not addressed_here(self.headers.get("Host")):   # (DNS rebinding: the module's docstring)
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
+            auth = local_access.credentials(self.headers.get("Authorization"), access_key)
             openrouter = re.fullmatch(r"/oauth/openrouter/([a-f0-9]{64})", u.path)
-            if not openrouter and u.path not in (chatgpt.CALLBACK, chatgpt.CALLBACK + "/done") and from_other_site(self.headers):
+            oauth = openrouter or u.path in (chatgpt.CALLBACK, chatgpt.CALLBACK + "/done")
+            # Electron starts its main window from a local splash file, which Chromium treats as another site.
+            native_page = (auth == "bearer" and self.headers.get("Sec-Fetch-Mode") == "navigate"
+                           and self.headers.get("Sec-Fetch-Dest") == "document"
+                           and (u.path == "/" or re.fullmatch(r"/p/[\w.-]+", u.path)))
+            if not oauth and not native_page and from_other_site(self.headers):
                 return self.json({"error": "forbidden"}, 403)
             try:
                 if u.path == chatgpt.CALLBACK:
@@ -736,7 +742,7 @@ def make_handler(jobs, access_key):
                     return self.send(200, '<!doctype html><meta charset="utf-8"><title>TextFold</title>'
                                      '<main><h1>Return to TextFold</h1><p>You can close this browser tab.</p></main>',
                                      "text/html; charset=utf-8")
-                if not openrouter and not local_access.credentials(self.headers.get("Authorization"), access_key):
+                if not openrouter and not auth:
                     return self.send(401, '{"error":"TextFold local access required"}', challenge=True)
                 if u.path == "/api/chatgpt/status":
                     return self.json(chatgpt.connection.status())

@@ -68,7 +68,8 @@ try {
       if (response.id !== 1) return;
       clearTimeout(timer);
       if (response.error || response.result?.exceptionDetails) {
-        reject(new Error('The installed renderer could not open the fixture'));
+        const detail = response.result?.exceptionDetails?.exception?.description || response.error?.message || '';
+        reject(new Error('The installed renderer could not open the fixture. ' + detail.split('\n')[0]));
       } else {
         resolve(response.result.result.value);
       }
