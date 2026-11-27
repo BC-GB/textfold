@@ -64,7 +64,14 @@ class Commands(unittest.TestCase):
         self.assertNotIn("--search", off)
         self.assertLess(on.index("--search"), on.index("exec"))   # (a flag of codex itself, before exec)
         for cmd in (off, on):
-            self.assertEqual(cmd[cmd.index("-s") + 1], "read-only")
+            self.assertIn("--strict-config", cmd)
+            self.assertIn("--ignore-user-config", cmd)
+            self.assertIn("features.shell_tool=false", cmd)
+            self.assertIn('default_permissions="textfold-document"', cmd)
+            self.assertIn('permissions.textfold-document.filesystem={":workspace_roots"="read"}', cmd)
+            self.assertIn('permissions.textfold-document.network.enabled=false', cmd)
+        self.assertIn('web_search="disabled"', off)
+        self.assertNotIn('web_search="disabled"', on)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", on)
 
     def test_pi(self):

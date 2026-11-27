@@ -193,9 +193,11 @@ is on: in a passage's question and its follow-ups, and in **Ask the whole text**
 text is opened, shown only where questions go to an agent: `app.js` askAgent; `/api/ask` `tools`, `models.ask_spec`).
 Then the agent looks it up on the web with its own tools, and nothing else (`agents.py`): Claude Code with
 `--tools WebSearch,WebFetch`, allowed without asking and no MCP server; CodeBuddy the same, with its StructuredOutput;
-Codex with `--search` in its read-only sandbox; Pi with `--no-builtin-tools`, its extensions' tools alone; Antigravity
+Codex with `--search` and a scratch-only permission profile; Pi with `--no-builtin-tools`, its extensions' tools alone; Antigravity
 with `search_web` and `read_url_content` beside `finish`, in its sandbox. None of them
-changes a file (Claude Code, CodeBuddy and Pi read none and run no command either; Codex may read, in its sandbox); each
+changes a file. For Codex, generation requires an installed CLI that accepts strict configuration and named permission
+profiles. TextFold disables its shell, model-accessible plug-ins, and local project instructions. An approved custom
+Codex launcher is trusted to forward these options to Codex. Each agent
 keeps its own system prompt, ours appended. The prompt adds that what
 comes from outside the paper ends with [[?]], each page drawn on given as a Markdown link (the reader draws links in
 answers: `reader.js`, `mdLite`); such an answer may take up to 15 minutes, is kept apart from one without the web

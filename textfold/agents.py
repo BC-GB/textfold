@@ -21,8 +21,8 @@ Antigravity's `agy/<model>`.
 Agents run here as one-shot text generators: no tools, no session, a scratch working directory. A question about a
 text can be looked up on the web (tools=True: the switch beside a question; models.ask_spec): the agent's own web
 tools, its own system prompt with ours after it, and nothing that changes a file (Claude Code and CodeBuddy: WebSearch
-and WebFetch alone, no MCP server; Pi: its extensions' tools, none of its own; Codex: its web search, in the read-only
-sandbox it always runs in, where it may read but writes nothing; Antigravity: its web search and page reading, in its
+and WebFetch alone, no MCP server; Pi: its extensions' tools, none of its own; Codex: its web search with a scratch-only
+permission profile; Antigravity: its web search and page reading, in its
 sandbox). Still no session, and the scratch directory to start in.
 """
 import contextlib
@@ -606,6 +606,16 @@ def _rpc(args, requests, timeout=30, cwd=None):
 # plugin catalog anew (Codex 0.163: megabytes a start, and a document starts one a passage, #120). As -c, not --disable:
 # a Codex that does not know one of these features ignores it, where --disable stops at once.
 CODEX_LEAN = [x for f in ("plugins", "remote_plugin", "apps") for x in ("-c", f"features.{f}=false")]
+CODEX_DOCUMENT_CONFIG = [
+    'default_permissions="textfold-document"',
+    'permissions.textfold-document.filesystem={":workspace_roots"="read"}',
+    'permissions.textfold-document.network.enabled=false',
+    'approval_policy="never"',
+    'features.shell_tool=false',
+    'features.shell_snapshot=false',
+    'mcp_servers={}',
+    'project_doc_max_bytes=0',
+]
 
 
 def _codex_models(path, cmd=None):
@@ -889,8 +899,12 @@ def run_codex(model, prompt, schema, system, effort, timeout, tools=False, cmd=N
     with scratch() as tmp:  # a scratch cwd: no repository, nothing to edit
         sf, of = Path(tmp) / "schema.json", Path(tmp) / "out.txt"
         sf.write_text(json.dumps(_strict(schema)), encoding="utf-8")
-        # (tools: its web search too; the sandbox stays read-only)
-        args = [*cmd, *(["--search"] if tools else []), "exec", *CODEX_LEAN, "--ephemeral", "--skip-git-repo-check", "-s", "read-only",
+        # A read-only profile can still read the host. Require the named scratch-only profile
+        # and suppress tool and project configuration before any document prompt is processed.
+        config = [*CODEX_DOCUMENT_CONFIG, *([] if tools else ['web_search="disabled"'])]
+        overrides = [value for setting in config for value in ("-c", setting)]
+        args = [*cmd, *(["--search"] if tools else []), "exec", *CODEX_LEAN, *overrides,
+                "--strict-config", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check",
                 "-m", model, "--output-schema", str(sf), "-o", str(of)]
         # off is "none" (gpt-5.5 takes it, and refuses "minimal"); a model that refuses "none" runs at "low"
         for level in (["none", "low"] if effort == "off" else [effort]):
