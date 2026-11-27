@@ -1,7 +1,7 @@
 """The model call, behind one function, for every model in the catalog (models.py):
 
   agent  claude-code  `claude -p --json-schema`               (structured output)
-         codex        `codex exec --output-schema`            (structured output)
+         codex        local ChatGPT completion bridge          (JSON mode)
          pi           `pi -p --mode json`                     (JSON asked for in the prompt)
   api    anthropic    the official SDK (`pip install anthropic`), structured output
          openai       any OpenAI-compatible endpoint (llm_openai.py), JSON mode

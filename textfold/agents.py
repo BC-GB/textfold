@@ -5,7 +5,7 @@ on the login shell's PATH, in the usual install directories and under the node v
 ThoughtDAG's where.cjs does. Five can run a generation, the three ThoughtDAG drives, CodeBuddy and Antigravity:
 
   claude-code  claude -p, structured output by --json-schema        models: fable, opus, sonnet, haiku
-  codex        codex exec, structured output by --output-schema      models: `codex app-server` model/list
+  codex        completion-only ChatGPT bridge, JSON mode             models: `codex app-server` model/list
   pi           pi -p --mode json, JSON asked for in the prompt       models: `pi --mode rpc` get_available_models
   codebuddy    codebuddy -p, structured output by --json-schema      models: the account's, as its --help lists them
   agy          agy --agent, the answer its finish tool's (stream-json) models: `agy models`
@@ -18,12 +18,14 @@ The others are reported when found, but not driven yet. A command the reader add
 `mirasim claude`, which runs Claude Code under another name) is run by the driver of the one it speaks as. A model id is ThoughtDAG's:
 `claude/claude-code/opus`, `codex/codex/<model>`, `pi/<provider>/<model>`; CodeBuddy's `codebuddy/codebuddy/<model>`,
 Antigravity's `agy/<model>`.
-Agents run here as one-shot text generators: no tools, no session, a scratch working directory. A question about a
+Agents run here as one-shot text generators: no tools, no session, a scratch working directory. Codex is the exception
+to where generation runs: its CLI lists models, but its prompts go through the completion-only local ChatGPT bridge,
+so document text never enters a coding-agent harness. A question about a
 text can be looked up on the web (tools=True: the switch beside a question; models.ask_spec): the agent's own web
 tools, its own system prompt with ours after it, and nothing that changes a file (Claude Code and CodeBuddy: WebSearch
-and WebFetch alone, no MCP server; Pi: its extensions' tools, none of its own; Codex: its web search, in the read-only
-sandbox it always runs in, where it may read but writes nothing; Antigravity: its web search and page reading, in its
-sandbox). Still no session, and the scratch directory to start in.
+and WebFetch alone, no MCP server; Pi: its extensions' tools, none of its own; Antigravity: its web search and page
+reading, in its sandbox). Codex web lookup is unavailable because it would require restoring the coding-agent harness.
+Still no session, and the scratch directory to start in.
 """
 import contextlib
 import glob
@@ -747,7 +749,7 @@ def path_of(runtime):
 # was saved, and its model ids have a prefix of their own, so the ids and cached replies of the agents above stay as
 # they are.
 CUSTOM = "custom/"
-PROTOCOLS = {"claude-code": "Claude Code", "codex": "Codex", "pi": "Pi", "agy": "Antigravity"}
+PROTOCOLS = {"claude-code": "Claude Code", "pi": "Pi", "agy": "Antigravity"}
 
 
 def command_of(command):
@@ -863,33 +865,16 @@ def result_of(got):
 
 
 def run_codex(model, prompt, schema, system, effort, timeout, tools=False, cmd=None):
-    """(cmd: the command that starts it, a custom agent's; else the Codex found here)"""
-    if cmd is None:
-        path = path_of("codex")
-        if not path:
-            raise RuntimeError("Codex was not found on this computer")
-        cmd = argv(path)
-    with scratch() as tmp:  # a scratch cwd: no repository, nothing to edit
-        sf, of = Path(tmp) / "schema.json", Path(tmp) / "out.txt"
-        sf.write_text(json.dumps(_strict(schema)), encoding="utf-8")
-        # (tools: its web search too; the sandbox stays read-only)
-        args = [*cmd, *(["--search"] if tools else []), "exec", *CODEX_LEAN, "--ephemeral", "--skip-git-repo-check", "-s", "read-only",
-                "-m", model, "--output-schema", str(sf), "-o", str(of)]
-        # off is "none" (gpt-5.5 takes it, and refuses "minimal"); a model that refuses "none" runs at "low"
-        for level in (["none", "low"] if effort == "off" else [effort]):
-            of.unlink(missing_ok=True)
-            # Codex can panic when its CLI writes to a full nonblocking pipe. Regular files avoid pipe backpressure.
-            with tempfile.TemporaryFile(dir=tmp) as stdout, tempfile.TemporaryFile(dir=tmp) as stderr:
-                r = run(args + (["-c", f"model_reasoning_effort={level}"] if level else []) + ["-"], input=f"{system}\n\n{prompt}",
-                        stdout=stdout, stderr=stderr, text=True, encoding="utf-8", errors="replace",
-                        timeout=timeout, env=child_env(), cwd=tmp)
-                if not r.returncode and of.exists():
-                    return parse_json(of.read_text(encoding="utf-8")), None
-                stream = stderr if stderr.seek(0, os.SEEK_END) else stdout
-                size = stream.seek(0, os.SEEK_END)
-                stream.seek(max(0, size - 3200))
-                detail = stream.read().decode("utf-8", errors="replace")[-800:]
-        raise RuntimeError(f"codex exec exited {r.returncode}: {detail}")
+    """Generate through the completion-only bridge; never give document text to Codex's coding-agent harness."""
+    if cmd is not None:
+        raise RuntimeError("Custom Codex commands are unavailable because their file and shell tools cannot be isolated")
+    if tools:
+        raise RuntimeError("Codex web lookup is unavailable: the completion-only bridge has no web tool, and the coding-agent harness can read files")
+    from . import bridges, llm_openai
+    if not bridges.bridge_status().get("running"):
+        raise RuntimeError("Codex generation needs the completion-only ChatGPT local bridge; start it in Model & API")
+    spec = {"model": model, "base": bridges.BRIDGE, "api_key": "none", "provider": "ChatGPT local bridge", "effort": effort}
+    return llm_openai.call(prompt, schema, spec, system, timeout)
 
 
 def run_pi(model, prompt, schema, system, effort, timeout, tools=False, cmd=None):

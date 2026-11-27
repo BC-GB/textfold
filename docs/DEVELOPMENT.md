@@ -91,12 +91,14 @@ Models (⚙ Model & API), ported from ThoughtDAG's model access:
   TextFold's own, written into the scratch folder for the call (our system prompt, the `finish` tool alone, no MCP
   servers, rules or skills of the user's), with `--output-format stream-json`: the answer is the `finish` call's or the
   result's, and the call ends once it is in, since agy goes on with work of its own after it (`agents.run`'s `done`).
+  Codex uses its CLI only to list models. Generations use the completion-only ChatGPT bridge below, so untrusted text
+  never enters a coding-agent turn with shell or file tools. Custom Codex wrappers are not offered for the same reason.
 - **Two easy ways in** (`textfold/bridges.py`, as in ThoughtDAG):
   - **ChatGPT plan, local bridge**: openai-oauth (npm) serves the plan as an OpenAI-compatible endpoint on
     127.0.0.1:10531, signed in with Codex's login (or a browser sign-in). Running, it joins the providers on its own
     (as a running Ollama does), with its text models; not running, the providers list has a row to start it (`npx -y openai-oauth@2 --detach`; `npx openai-oauth stop` stops it). On the test
     paper: 174 s with gpt-5.5 at the recommended levels, nothing failed, no cost beyond the plan; a section takes about
-    8 s against 13 s through `codex exec`.
+    8 s. Codex model entries use this same bridge for generation and ask the reader to start it when it is not running.
   - **OpenRouter in one click**: OAuth with PKCE. The server makes the verifier, OpenRouter's consent page sends the
     reader back to `/oauth/openrouter` with a code, the code and verifier become a key, and the key waits in memory
     until the reader picks models and saves. Free models are listed first (the free router, then known makers, never an
@@ -108,8 +110,8 @@ Models (⚙ Model & API), ported from ThoughtDAG's model access:
 - **Thinking, per task**, set by the reader's tools and not by the reader (a reader is here to read):
   `models.DEFAULT_THINKING` gives the levels and takeaways off, the argument links low, the translation off, the
   questions low, from the model bench.
-  Each caller spells a level its own way: Claude Code `--effort`, and off as `MAX_THINKING_TOKENS=0`; Codex
-  `model_reasoning_effort` (off as `none`, else `low`); Pi `--thinking`; the Claude API thinking and effort by model
+  Each caller spells a level its own way: Claude Code `--effort`, and off as `MAX_THINKING_TOKENS=0`; Codex through
+  the bridge uses the OpenAI-compatible provider fields; Pi `--thinking`; the Claude API thinking and effort by model
   (off is `between_tools` on Sonnet 5.x, `disabled` on older models, the least effort where thinking cannot be
   switched off, no thinking on Haiku); OpenAI-compatible APIs the provider's field (OpenRouter `reasoning`, GLM and
   DeepSeek and Kimi `thinking`, DeepSeek's level as `reasoning_effort` beside it since on alone it thinks at high, Qwen
@@ -186,10 +188,9 @@ is on: in a passage's question and its follow-ups, and in **Ask the whole text**
 text is opened, shown only where questions go to an agent: `app.js` askAgent; `/api/ask` `tools`, `models.ask_spec`).
 Then the agent looks it up on the web with its own tools, and nothing else (`agents.py`): Claude Code with
 `--tools WebSearch,WebFetch`, allowed without asking and no MCP server; CodeBuddy the same, with its StructuredOutput;
-Codex with `--search` in its read-only sandbox; Pi with `--no-builtin-tools`, its extensions' tools alone; Antigravity
-with `search_web` and `read_url_content` beside `finish`, in its sandbox. None of them
-changes a file (Claude Code, CodeBuddy and Pi read none and run no command either; Codex may read, in its sandbox); each
-keeps its own system prompt, ours appended. The prompt adds that what
+Pi with `--no-builtin-tools`, its extensions' tools alone; Antigravity with `search_web` and `read_url_content` beside
+`finish`, in its sandbox. Codex web lookup is refused because the completion bridge has no tools and the Codex harness
+has file access. The other agents change no file; each keeps its own system prompt, ours appended. The prompt adds that what
 comes from outside the paper ends with [[?]], each page drawn on given as a Markdown link (the reader draws links in
 answers: `reader.js`, `mdLite`); such an answer may take up to 15 minutes, is kept apart from one without the web
 (`llm.call`'s key), and its turn keeps `tools: true`. A service (an API) has no tools of its own: there is no switch
@@ -438,7 +439,7 @@ textfold/translate.py  any language: sentence-aligned translation + short levels
 textfold/store.py    versioned layers per paper; assembling a reader from them
 textfold/pipeline.py fetch → parse → ladder + links in the text's own language (once) → translation, with progress
 textfold/server.py   local server: pages, /api/papers, /api/jobs (and /api/jobs/stop), /api/generate, /api/settings
-textfold/agents.py   local agents: the scan, model catalogs, one-shot runs (claude -p, codex exec, pi -p)
+textfold/agents.py   local agents: the scan, model catalogs, one-shot runs (claude -p, Codex bridge, pi -p)
 textfold/providers.py API providers: ThoughtDAG's env registry and presets, /models probing
 textfold/models.py   one catalog of agent and API models; settings; resolving a model id
 textfold/llm.py      the call (cached) for every kind of model; llm_openai.py: OpenAI-compatible endpoints

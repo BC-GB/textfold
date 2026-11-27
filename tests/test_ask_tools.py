@@ -1,7 +1,8 @@
 """A question looked up on the web (#66). An agent on this computer runs as a one-shot text generator: no tools, a
 scratch folder. With the switch beside a question on (a passage's or the whole text's, as the reader needs it), it
 answers with its own web tools: nothing that changes a file (Claude Code, CodeBuddy and Pi no tool that reads one or
-runs a command either, no MCP server; Codex its read-only sandbox), its own system prompt with ours after it. A service has no tools of its own: nothing changes for it. The answer
+runs a command either, no MCP server), its own system prompt with ours after it. Codex refuses the switch because its
+completion-only bridge has no web tool. A service has no tools of its own: nothing changes for it. The answer
 cites the pages it drew on as links, says it was made so, and its time to answer is longer. The commands are looked
 at, not run: no agent and no network.
 
@@ -28,9 +29,6 @@ class Runs:
 
     def __call__(self, cmd, **kw):
         self.cmds.append(cmd)
-        if "-o" in cmd:   # codex exec writes its answer to the file named
-            Path(cmd[cmd.index("-o") + 1]).write_text('{"ok": true}', encoding="utf-8")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if "--mode" in cmd:   # pi's events
             end = {"type": "agent_end", "messages": [{"role": "assistant", "content": [{"type": "text", "text": '{"ok": true}'}]}]}
             return SimpleNamespace(returncode=0, stdout=json.dumps(end), stderr="")
@@ -60,12 +58,8 @@ class Commands(unittest.TestCase):
             self.assertNotIn(flag, on)
 
     def test_codex(self):
-        off, on = self.run_agent("codex", False), self.run_agent("codex", True)
-        self.assertNotIn("--search", off)
-        self.assertLess(on.index("--search"), on.index("exec"))   # (a flag of codex itself, before exec)
-        for cmd in (off, on):
-            self.assertEqual(cmd[cmd.index("-s") + 1], "read-only")
-        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", on)
+        with self.assertRaisesRegex(RuntimeError, "completion-only bridge has no web tool"):
+            agents.run_codex("m", "Say ok.", SCHEMA, "You answer with JSON only.", None, 60, tools=True)
 
     def test_pi(self):
         off, on = self.run_agent("pi", False), self.run_agent("pi", True)

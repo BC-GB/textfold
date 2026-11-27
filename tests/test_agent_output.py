@@ -11,13 +11,11 @@ Run from the repo root:
 """
 import json
 import shutil
-import subprocess
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from textfold import agents, llm
+from textfold import agents, bridges, llm, llm_openai
 
 SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
 SPEC = {"kind": "agent", "model": "m"}
@@ -72,23 +70,33 @@ class Scratch(unittest.TestCase):
         self.addCleanup(p.stop)
         self.addCleanup(lambda: [real(x, ignore_errors=True) for x in self.left])
 
-    def test_codex_its_reply_read(self):
-        def codex(cmd, **kw):
-            Path(cmd[cmd.index("-o") + 1]).write_text('{"ok": true}', encoding="utf-8")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        self.assertEqual(ask("codex", codex), ({"ok": True}, None))
-        self.assertEqual(len(self.left), 1)
-
-    def test_codex_its_own_error(self):
-        def late(cmd, **kw):
-            raise subprocess.TimeoutExpired(cmd, 900)
-        with self.assertRaises(subprocess.TimeoutExpired):   # (where it read WinError 32)
-            ask("codex", late)
-
     def test_claude_code_its_reply_read(self):
         got = {"type": "result", "is_error": False, "structured_output": {"ok": True}, "total_cost_usd": 0}
         self.assertEqual(ask("claude-code", claude_prints(got)), ({"ok": True}, 0))
         self.assertEqual(len(self.left), 1)
+
+
+class CodexBoundary(unittest.TestCase):
+    def test_its_completion_bridge_reply(self):
+        def complete(prompt, schema, spec, system, timeout):
+            self.assertEqual((prompt, schema, system, timeout), ("Say ok.", SCHEMA, "System", 60))
+            self.assertEqual((spec["base"], spec["model"], spec["effort"]), (bridges.BRIDGE, "m", "low"))
+            self.assertNotIn("tools", spec)
+            return {"ok": True}, None
+
+        with mock.patch.object(bridges, "bridge_status", return_value={"running": True}), \
+             mock.patch.object(llm_openai, "call", side_effect=complete), mock.patch.object(agents, "run") as run:
+            self.assertEqual(agents.run_codex("m", "Say ok.", SCHEMA, "System", "low", 60), ({"ok": True}, None))
+        run.assert_not_called()
+
+    def test_it_requires_the_completion_bridge(self):
+        with mock.patch.object(bridges, "bridge_status", return_value={"running": False}), \
+             self.assertRaisesRegex(RuntimeError, "completion-only ChatGPT local bridge"):
+            agents.run_codex("m", "Say ok.", SCHEMA, "System", None, 60)
+
+    def test_a_custom_codex_command_is_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "file and shell tools cannot be isolated"):
+            agents.run_codex("m", "Say ok.", SCHEMA, "System", None, 60, cmd=["wrapper", "codex"])
 
 
 if __name__ == "__main__":

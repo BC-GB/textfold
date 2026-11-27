@@ -148,7 +148,7 @@ class Probe(Fake):
 
     def test_codex(self):
         r = agents.probe_custom("wrap codex", "codex")
-        self.assertEqual((r["protocol"], r["models"]), ("codex", [{"id": "gpt-5.5", "name": "GPT-5.5", "efforts": ["low", "high"]}]))
+        self.assertEqual((r["protocol"], r["models"]), (None, []))   # a custom Codex would restore shell and file tools
 
     def test_pi(self):
         r = agents.probe_custom("wrap pi", "pi")
@@ -164,8 +164,8 @@ class Probe(Fake):
 
     def test_a_list_it_cannot_give(self):
         with mock.patch.dict(os.environ, {"FAKE_BROKEN_LIST": "1"}):
-            r = agents.probe_custom("wrap codex", "codex")
-        self.assertEqual((r["protocol"], r["models"]), ("codex", []))
+            r = agents.probe_custom("wrap pi", "pi")
+        self.assertEqual((r["protocol"], r["models"]), ("pi", []))
         self.assertIn("no list today", r["error"])
 
     def test_not_found(self):
@@ -222,16 +222,10 @@ class Generate(Fake):
         self.assertNotEqual(Path(c["cwd"]).resolve(), Path.cwd().resolve())   # (a scratch folder, as Claude Code's own)
 
     def test_codex(self):
-        with tempfile.TemporaryDirectory() as cache:
-            rec, _ = llm.call("Fold this.", SCHEMA, self.spec("codex", "gpt-5.5", "wrap codex"), Path(cache))
-        self.assertEqual(rec["out"], {"takeaway": "Folded by codex"})
-        (c,) = self.calls()
-        self.assertEqual((c["sub"], c["args"][0], c["args"][c["args"].index("-m") + 1]), ("codex", "exec", "gpt-5.5"))
-        self.assertTrue(c["stdin"].endswith("Fold this."))
-        # without its plugins and apps, whose catalog each start fetched anew (#120); as -c, which an older Codex ignores
-        overrides = {c["args"][i + 1] for i, a in enumerate(c["args"]) if a == "-c"}
-        self.assertLessEqual({"features.plugins=false", "features.remote_plugin=false", "features.apps=false"}, overrides)
-        self.assertNotIn("--disable", c["args"])
+        with tempfile.TemporaryDirectory() as cache, \
+             self.assertRaisesRegex(RuntimeError, "file and shell tools cannot be isolated"):
+            llm.call("Fold this.", SCHEMA, self.spec("codex", "gpt-5.5", "wrap codex"), Path(cache))
+        self.assertEqual(self.calls(), [])
 
     def test_pi(self):
         with tempfile.TemporaryDirectory() as cache:
@@ -310,10 +304,10 @@ class Routes(unittest.TestCase):
         saved = next(x for x in self.settings()["custom_agents"] if x["key"] == "mirasim")
         self.assertEqual(saved["models"], [{"id": "sonnet", "name": "Sonnet", "efforts": ["low"]}, {"id": "kimi-k2", "name": "kimi-k2", "efforts": []}])
         # another of the same name: a key of its own; an edit keeps its key
-        d = self.call("/api/agents/save", {"name": "Mirasim", "command": "mirasim codex", "protocol": "codex", "models": ["gpt-5.5"]})[1]
+        d = self.call("/api/agents/save", {"name": "Mirasim", "command": "mirasim pi", "protocol": "pi", "models": ["moonshot/kimi-k2"]})[1]
         self.assertEqual(sorted(x["key"] for x in d["customAgents"]), ["mirasim", "mirasim-2"])
-        d = self.call("/api/agents/save", {"key": "mirasim-2", "name": "Mirasim Codex", "command": "mirasim codex", "protocol": "codex", "models": ["gpt-5.5"]})[1]
-        self.assertEqual(sorted((x["key"], x["name"]) for x in d["customAgents"]), [("mirasim", "Mirasim"), ("mirasim-2", "Mirasim Codex")])
+        d = self.call("/api/agents/save", {"key": "mirasim-2", "name": "Mirasim Pi", "command": "mirasim pi", "protocol": "pi", "models": ["moonshot/kimi-k2"]})[1]
+        self.assertEqual(sorted((x["key"], x["name"]) for x in d["customAgents"]), [("mirasim", "Mirasim"), ("mirasim-2", "Mirasim Pi")])
         for key in ("mirasim", "mirasim-2"):
             d = self.call("/api/agents/remove", {"key": key})[1]
         self.assertEqual(d["customAgents"], [])
@@ -321,6 +315,7 @@ class Routes(unittest.TestCase):
     def test_refused(self):
         self.assertEqual(self.call("/api/agents/save", {"name": "X", "command": "", "protocol": "claude-code", "models": ["a"]})[0], 400)
         self.assertEqual(self.call("/api/agents/save", {"name": "X", "command": "x", "protocol": "gemini", "models": ["a"]})[0], 400)
+        self.assertEqual(self.call("/api/agents/save", {"name": "X", "command": "x codex", "protocol": "codex", "models": ["m"]})[0], 400)
 
     def test_probe(self):
         code, r = self.call("/api/agents/probe", {"command": f"{self.wrap} claude", "protocol": "claude-code"})
