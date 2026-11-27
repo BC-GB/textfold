@@ -5,6 +5,7 @@
          pi           `pi -p --mode json`                     (JSON asked for in the prompt)
   api    anthropic    the official SDK (`pip install anthropic`), structured output
          openai       any OpenAI-compatible endpoint (llm_openai.py), JSON mode
+         chatgpt-plan OpenAI Responses API with the signed-in reader's permission
 
 Replies are cached on disk by a hash of everything that shapes them, so a rebuild costs nothing until
 the prompt, the schema, the model or its effort changes. `force` skips the cache read: that is what
@@ -123,6 +124,8 @@ def call(prompt, schema, model, cache_dir: Path, force=False, timeout=900, syste
         parts = [system, prompt, schema, spec["model"]]  # the key the cache was first written with stays valid
     else:
         parts = [system, prompt, schema, spec["id"]] + ([effort] if effort else [])
+    if spec.get("protocol") == "chatgpt-plan":
+        parts.append(spec["target"])
     if spec.get("tools"):   # (an agent with its harness answers otherwise: its own key)
         parts.append("tools")
     key = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
@@ -143,7 +146,7 @@ def call(prompt, schema, model, cache_dir: Path, force=False, timeout=900, syste
     except Exception as e:
         # A reasoning level is a request, never a condition: whatever went wrong with it set (a flag or field an API no
         # longer takes, a level a model does not have), the call is made once more the model's own way.
-        if not effort:
+        if not effort or spec.get("protocol") == "chatgpt-plan":
             raise
         note = f"reasoning level {effort} dropped: {str(e)[:200]}"
         out, cost = _once(prompt, schema, {**spec, "effort": None}, timeout, system)
@@ -203,6 +206,10 @@ def _once(prompt, schema, spec, timeout, system):
         return agents.run_pi(spec["model"], prompt, schema, system, effort, timeout, tools)
     if spec["protocol"] == "anthropic":
         return _anthropic(prompt, schema, spec, timeout, system)
+    if spec["protocol"] == "chatgpt-plan":
+        from . import chatgpt
+        reply = chatgpt.connection.responses(spec["connection"], spec["model"], prompt, system, schema, timeout)
+        return agents.parse_json(reply, schema), None
     from .llm_openai import call as openai_call
     return openai_call(prompt, schema, spec, system, timeout)
 

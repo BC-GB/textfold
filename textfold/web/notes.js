@@ -210,7 +210,9 @@
   }
   const say = (text, bad) => { const s2 = $('nb-ask').querySelector('.nb-said'); if (s2) { s2.className = `nb-said${bad ? ' bad' : ''}`; s2.textContent = text; } };
   const postJson = async (path, body) => {
-    const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await fetch(path, body === undefined ? {} : {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...window.DRChatGPTHeaders?.(path) }, body: JSON.stringify(body),
+    });
     const got = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(got.error || r.status);
     return got;

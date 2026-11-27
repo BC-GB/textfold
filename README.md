@@ -161,11 +161,14 @@ TextFold can use a model you already have. Select a model and provider in **Sett
 
 | You have | What to do |
 |---|---|
+| An eligible ChatGPT plan | In **Settings → Use your ChatGPT plan**, choose **Continue with ChatGPT**, grant plan usage in OpenAI's browser prompt, then select a **ChatGPT plan** model. [OpenAI's guide to plan usage](https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites) |
 | Claude Code, Codex, Pi, WorkBuddy or Antigravity | Select a model listed under that agent. Use **Rescan** if you just installed or connected it. WorkBuddy and Antigravity are experimental. |
 | ChatGPT account with Codex access | Run `codex login` in the official Codex CLI and complete sign-in in your browser. In TextFold, open **Settings**, choose **Rescan**, and select a **Codex** model. The CLI manages your login and sends TextFold's model prompts to OpenAI. [Codex authentication](https://learn.chatgpt.com/docs/auth#codex-cli) |
-| ChatGPT via the optional Node.js bridge | **Use my ChatGPT plan** runs the third-party `openai-oauth` helper. The helper can use your saved Codex login or open a browser sign-in. |
+| ChatGPT via the optional Node.js bridge | The **ChatGPT (local bridge)** option under **Settings → Providers** runs the third-party `openai-oauth` helper. The helper can use your saved Codex login or open a browser sign-in. |
 | Nothing yet | Click **OpenRouter in one click**, authorize, and select a model. |
 | An API key | **Settings › Add provider**: Anthropic, OpenAI, DeepSeek, Qwen, Zhipu GLM, Kimi, MiniMax, Google, Ollama, or any OpenAI-compatible endpoint. |
+
+Use direct ChatGPT sign-in in TextFold running on your own computer. Sign-in and permission to use your plan are separate. Selecting a ChatGPT plan model sends the document text or questions needed for that request to OpenAI. TextFold keeps tokens in memory, so reconnect after restarting the app. Use **Manage usage** in Settings to review or limit usage in ChatGPT.
 
 Your questions can go to a stronger model than the one that writes the levels: **Settings › Models › Answering questions**, with how hard it reasons.
 

@@ -7,13 +7,14 @@
 An API id that two providers share belongs to the env provider. A saved choice includes its destination,
 so discovery can never redirect document text to a different provider with the same model id.
 """
+from contextvars import copy_context
 import hashlib
 import json
 import os
 import stat
 import warnings
 
-from . import agents, bridges, providers
+from . import agents, bridges, chatgpt, providers
 from ._storage_layout import DirectoryFiles
 from .store import HOME, OLD_HOMES, read_text
 
@@ -101,7 +102,25 @@ def provider_list(s, live=None):
     bridge = bridges.bridge_provider(providers.NOT_TEXT) if live is None else live["bridge"]
     if bridge and not any(p["base"].rstrip("/") == bridges.BRIDGE for p in ui):
         env.append(bridge)
-    return env + ui
+    plan = chatgpt.connection.provider()
+    return env + ui + ([plan] if plan else [])
+
+
+def job_context(field="model"):
+    """A queued task can spend plan usage only with the authorization and model chosen when it was submitted."""
+    context = copy_context()
+    if not chatgpt.reader_key() or chatgpt.job_choice.get() is not None:
+        return context
+    s = load_settings()
+    if field == "ask_model" and not s.get(field):
+        field = "model"
+    chosen = s.get(field) or ""
+    plan = chatgpt.connection.provider() if chosen.startswith(chatgpt.MODEL_PREFIX) else None
+    choice = ()
+    if plan and s.get(f"{field}_target") == _provider_target(plan) and any(m["id"] == chosen for m in plan["models"]):
+        choice = (plan["connection"], chosen)
+    context.run(chatgpt.job_choice.set, choice)
+    return context
 
 
 def catalog(s=None, live=None):
@@ -115,11 +134,11 @@ def catalog(s=None, live=None):
     provs = provider_list(s, live)
     for p in provs:
         for m in p["models"]:
-            if m["id"] in seen:
+            if m["id"] in seen or (m["id"].startswith(chatgpt.MODEL_PREFIX) and p["protocol"] != "chatgpt-plan"):
                 continue
             seen.add(m["id"])
             out.append({"id": m["id"], "name": m["name"], "kind": "api", "group": p["key"], "base": p["base"], "efforts": [],
-                        "defaultEffort": None, "target": _target("api", p["protocol"], p["base"], p["source"], p["key"])})
+                        "defaultEffort": None, "target": _provider_target(p)})
     return out, provs
 
 
@@ -130,6 +149,13 @@ def _target(*values):
 
 def _agent_target(spec):
     return _target("agent", spec["runtime"], spec.get("protocol"), spec.get("command"))
+
+
+def _provider_target(provider):
+    fields = ("api", provider["protocol"], provider["base"], provider["source"], provider["key"])
+    if provider["protocol"] == "chatgpt-plan":
+        return _target(*fields, provider["identity"])
+    return _target(*fields)
 
 
 def _selected(field, s, cat):
@@ -157,7 +183,8 @@ def resolve(model_id=None, s=None):
 
 def _resolve_saved(field, s, cat, provs):
     chosen = _selected(field, s, cat)
-    if chosen is None:
+    job_choice = chatgpt.job_choice.get()
+    if chosen is None or (job_choice and chosen["id"] != job_choice[1]):
         raise RuntimeError(NO_MODEL)
     return _resolve(chosen["id"], s, provs, kind=chosen["kind"])
 
@@ -183,16 +210,24 @@ def _resolve(model_id, s, provs=None, kind=None):
     if kind == "agent":
         raise RuntimeError(f"Agent model {model_id} is not available")
     for p in provider_list(s) if provs is None else provs:
-        if any(m["id"] == model_id for m in p["models"]):
-            return {"id": model_id, "kind": "api", "protocol": p["protocol"], "base": p["base"], "api_key": p["api_key"],
-                    "provider": p["name"], "model": model_id, "effort": None}
+        direct = p["protocol"] == "chatgpt-plan"
+        if direct != model_id.startswith(chatgpt.MODEL_PREFIX):
+            continue
+        row = next((m for m in p["models"] if m["id"] == model_id), None)
+        if row is None:
+            continue
+        spec = {"id": model_id, "kind": "api", "protocol": p["protocol"], "base": p["base"], "api_key": p["api_key"],
+                "provider": p["name"], "model": row["slug"] if direct else model_id, "effort": None}
+        if direct:
+            spec.update(connection=p["connection"], target=_provider_target(p))
+        return spec
     raise RuntimeError(f"Model {model_id} is not available (its agent or provider is gone)")
 
 
 def for_task(spec, task, s=None):
     """The spec a task is run with: the reasoning level for the task. A spec that names its own effort keeps it (the
     command line's, the model bench's)."""
-    if spec.get("effort") is not None:
+    if spec.get("effort") is not None or spec.get("protocol") == "chatgpt-plan":
         return spec
     level = DEFAULT_THINKING[task]
     return {**spec, "effort": None if level == "default" else level}

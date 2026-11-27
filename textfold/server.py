@@ -115,13 +115,14 @@ import traceback
 import urllib.parse
 import urllib.request
 import uuid
+import webbrowser
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import webpage
-from . import __version__, adapt, agents, bridges, build, corrections, engine, fetch, fold, ids, langs, library, llm, llm_openai, local, models, news, notes, office, pdf, pdfdoc, pdffigs, pdftext, pipeline, providers, record, store, zotero
+from . import __version__, adapt, agents, bridges, build, chatgpt, corrections, engine, fetch, fold, ids, langs, library, llm, llm_openai, local, models, news, notes, office, pdf, pdfdoc, pdffigs, pdftext, pipeline, providers, record, store, zotero
 
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "reader.js": "text/javascript",
           "reader.css": "text/css", "i18n.js": "text/javascript", "tutorial.js": "text/javascript", "webmcp.js": "text/javascript",
@@ -196,6 +197,7 @@ def models_payload():
         "askModel": ask, "askEffort": ask_effort, "askName": name(ask) if ask and ask != selected else "",
         "savedModel": s.get("model"), "savedAskModel": s.get("ask_model"),
         "efforts": s.get("efforts") or {}, "bridge": discovery["bridge"], "bridgePackage": bridges.BRIDGE_PACKAGE,
+        "chatgpt": chatgpt.connection.status(),
         "discovery": {k: discovery[k] for k in ("refreshing", "ready", "error")},
         "agents": [{k: a[k] for k in ("runtime", "label", "binary", "path", "version", "runnable", "error")} | {"models": len(a["models"])}
                    for a in agents.STATE["agents"]],
@@ -220,24 +222,25 @@ class Jobs:
     def __init__(self):
         self.items, self.q, self.eq = {}, queue.Queue(), queue.Queue()
         self.stops = {}   # job id -> threading.Event, set when the reader stops it (kept out of the job: it is sent as JSON)
-        self.pending = {}  # files that wait for the engine to be installed: pid -> (file, name, lang)
+        self.pending = {}  # files waiting for the engine: (file, name, lang, authorization at upload)
         for side in (store.DATA / "uploads").glob("*.json"):   # (kept beside each, so a restart forgets none)
             try:
                 w = json.loads(store.read_text(side))
                 f = side.parent / Path(w.get("file") or side.stem + ".pdf").name
                 if f.exists() and not (store.pdir(f.stem) / "meta.json").exists():
-                    self.pending[f.stem] = (str(f), w["name"], w["lang"])
+                    self.pending[f.stem] = (str(f), w["name"], w["lang"], None)
             except (OSError, ValueError, KeyError, AttributeError):
                 pass
         threading.Thread(target=self.work, daemon=True).start()
         threading.Thread(target=self.work_engine, daemon=True).start()
 
     def _new(self, q, **kw):
+        context = models.job_context()
         job = {"id": uuid.uuid4().hex[:10], "kind": "generate", "pid": "", "lang": "", "force": False, "status": "queued",
                "stage": "queued", "done": 0, "total": 0, "error": "", "log": [], "created": time.time(), "finished": None, **kw}
         self.items[job["id"]] = job
         self.stops[job["id"]] = threading.Event()
-        q.put(job["id"])
+        q.put((job["id"], context))
         return job
 
     def _same(self, **kw):   # the same request already waiting or running (and not being stopped) is that job
@@ -256,7 +259,7 @@ class Jobs:
 
     def wait_for_engine(self, pid, file, name, lang):
         """A file kept until the engine is installed (then converted), with a note of its name and language beside it."""
-        self.pending[pid] = (str(file), name, lang)
+        self.pending[pid] = (str(file), name, lang, models.job_context())
         Path(file).with_suffix(".json").write_text(json.dumps({"name": name, "lang": lang, "file": Path(file).name}, ensure_ascii=False), encoding="utf-8")
 
     def read_pdf(self, pid, file, name, lang):
@@ -271,6 +274,7 @@ class Jobs:
         """A document made of notes picked (record.make), on a thread of its own: its model's call waits on the
         network beside any generation. Listed with the jobs, so the sidebar shows it being written; stopped, nothing
         is kept."""
+        context = models.job_context("ask_model")
         job = {"id": uuid.uuid4().hex[:10], "kind": "record", "pid": "", "lang": "", "force": False, "status": "running",
                "stage": "write", "done": 0, "total": 0, "error": "", "log": [], "created": time.time(), "finished": None, "title": title}
         self.items[job["id"]] = job
@@ -292,7 +296,7 @@ class Jobs:
                 job.update(status="error", error=str(e)[:600])
                 job["log"].append(traceback.format_exc()[-2000:])
             job["finished"] = time.time()
-        threading.Thread(target=run, daemon=True).start()
+        threading.Thread(target=context.run, args=(run,), daemon=True).start()
         return job
 
     def install_engine(self):
@@ -365,40 +369,43 @@ class Jobs:
 
     def work(self):
         while True:
-            job = self.items[self.q.get()]
-            if job["status"] == "stopped":
-                continue
-            job["status"] = "running"
-            stop = self.stops[job["id"]]
+            job_id, context = self.q.get()
+            context.run(self._work, self.items[job_id])
+
+    def _work(self, job):
+        if job["status"] == "stopped":
+            return
+        job["status"] = "running"
+        stop = self.stops[job["id"]]
+        try:
             try:
+                spec = models.resolve(None)  # the model chosen in the settings, resolved once per job
+                job["model"] = spec["id"]
+            except RuntimeError:   # none: the paper is still fetched and parsed, to be read as written
+                spec = None
+            pipeline.generate(job["pid"], job["lang"], spec, force=job["force"], progress=self._progress(job, stop), log=self._log(job), stop=stop,
+                              shown=lambda n: job.update(shown=n))   # (a translation's sections the page can show already)
+            job["status"] = "done"
+        except Exception as e:  # shown in the app; the traceback stays in the job log
+            if str(e) == "no-html" and not stop.is_set():
+                try:   # an arXiv paper without its HTML version: its PDF (the reader's, else arXiv's), read here
+                    if job.get("attach"):
+                        self._fallback(job)
+                    else:
+                        self._pdf_link(job, f"https://arxiv.org/pdf/{job['pid']}")
+                    return
+                except Exception:   # arXiv's PDF out of reach too: the app's own sentence for no HTML
+                    pass
+            if isinstance(e, webpage.WebPDF) and not stop.is_set():
                 try:
-                    spec = models.resolve(None)  # the model chosen in the settings, resolved once per job
-                    job["model"] = spec["id"]
-                except RuntimeError:   # none: the paper is still fetched and parsed, to be read as written
-                    spec = None
-                pipeline.generate(job["pid"], job["lang"], spec, force=job["force"], progress=self._progress(job, stop), log=self._log(job), stop=stop,
-                                  shown=lambda n: job.update(shown=n))   # (a translation's sections the page can show already)
-                job["status"] = "done"
-            except Exception as e:  # shown in the app; the traceback stays in the job log
-                if str(e) == "no-html" and not stop.is_set():
-                    try:   # an arXiv paper without its HTML version: its PDF (the reader's, else arXiv's), read here
-                        if job.get("attach"):
-                            self._fallback(job)
-                        else:
-                            self._pdf_link(job, f"https://arxiv.org/pdf/{job['pid']}")
-                        continue
-                    except Exception:   # arXiv's PDF out of reach too: the app's own sentence for no HTML
-                        pass
-                if isinstance(e, webpage.WebPDF) and not stop.is_set():
-                    try:
-                        self._pdf_link(job, e.url, e.requests)   # a link to a PDF: the file, as if it had been dropped on the landing
-                        continue
-                    except Exception as e2:
-                        e = e2
-                self._end(job, e, stop)
-                continue
-            job["finished"] = time.time()
-            PAGES.pop(job["pid"], None)
+                    self._pdf_link(job, e.url, e.requests)   # a link to a PDF: the file, as if it had been dropped on the landing
+                    return
+                except Exception as e2:
+                    e = e2
+            self._end(job, e, stop)
+            return
+        job["finished"] = time.time()
+        PAGES.pop(job["pid"], None)
 
     def _pdf_link(self, job, url, requests=fetch.PUBLIC):
         data = fetch.urlread(urllib.request.Request(url, headers=fetch.UA), 90, pdf.LIMIT + 1, open_url=requests.open)[0]
@@ -437,48 +444,55 @@ class Jobs:
 
     def work_engine(self):
         while True:
-            job = self.items[self.eq.get()]
-            if job["status"] == "stopped":
-                continue
-            job["status"] = "running"
-            stop = self.stops[job["id"]]
-            progress, log = self._progress(job, stop), self._log(job)
-            try:
-                if job["kind"] == "install":
-                    engine.install(progress, log, stop)
-                    waiting, self.pending = self.pending, {}
-                    for pid, (file, name, lang) in waiting.items():
-                        self.convert(pid, file, name, lang)
-                else:
-                    out = store.DATA / "uploads" / f"{job['pid']}-{job['tier']}"
-                    try:
-                        engine.convert(job["file"], out, job["tier"], progress, log, stop)
-                    except Exception:   # a file the engine could not read: TextFold's own reader, if it has one
-                        if stop.is_set() or not office.reads(engine.kind_of(job["file"])):
-                            raise
-                        log("the engine could not read this file: TextFold reads it itself")
-                        office.convert(job["file"], out)
-                    langs = self.superseded(job["pid"]) if job["replace"] else []
-                    pdfdoc.store_pdf(job["pid"], out, pdfdoc.read_output(out), job["name"], job["tier"], replace=job["replace"])
-                    src = store.pdir(job["pid"]) / pdfdoc.kept_name(job["pid"], job["file"])   # the file itself, kept
-                    if not src.exists():
-                        src.write_bytes(Path(job["file"]).read_bytes())
-                    shutil.rmtree(out, ignore_errors=True)
-                    if Path(job["file"]).parent == store.DATA / "uploads":
-                        Path(job["file"]).unlink(missing_ok=True)
-                        Path(job["file"]).with_suffix(".json").unlink(missing_ok=True)
-                    PAGES.pop(job["pid"], None)
-                    job["readable"] = True
-                    job["next"] = self.submit(job["pid"], job["lang"] or None, False)["id"]   # its levels, in the other queue
-                    base = store.text_lang(job["pid"])
-                    for lang in langs:   # converted again: its other languages made again of the new text (its own first)
-                        if lang not in (base, job["lang"] or base):
-                            self.submit(job["pid"], lang, False)
-                job.update(status="done", finished=time.time())
-            except Exception as e:
-                if job["kind"] == "convert":   # what the engine wrote before it failed
-                    shutil.rmtree(store.DATA / "uploads" / f"{job['pid']}-{job['tier']}", ignore_errors=True)
-                self._end(job, e, stop)
+            job_id, context = self.eq.get()
+            context.run(self._work_engine, self.items[job_id])
+
+    def _work_engine(self, job):
+        if job["status"] == "stopped":
+            return
+        job["status"] = "running"
+        stop = self.stops[job["id"]]
+        progress, log = self._progress(job, stop), self._log(job)
+        try:
+            if job["kind"] == "install":
+                engine.install(progress, log, stop)
+                waiting, self.pending = self.pending, {}
+                with chatgpt.reader(None):
+                    for pid, (file, name, lang, context) in waiting.items():
+                        if context is not None:
+                            context.run(self.convert, pid, file, name, lang)
+                        else:
+                            self.convert(pid, file, name, lang)
+            else:
+                out = store.DATA / "uploads" / f"{job['pid']}-{job['tier']}"
+                try:
+                    engine.convert(job["file"], out, job["tier"], progress, log, stop)
+                except Exception:   # a file the engine could not read: TextFold's own reader, if it has one
+                    if stop.is_set() or not office.reads(engine.kind_of(job["file"])):
+                        raise
+                    log("the engine could not read this file: TextFold reads it itself")
+                    office.convert(job["file"], out)
+                langs = self.superseded(job["pid"]) if job["replace"] else []
+                pdfdoc.store_pdf(job["pid"], out, pdfdoc.read_output(out), job["name"], job["tier"], replace=job["replace"])
+                src = store.pdir(job["pid"]) / pdfdoc.kept_name(job["pid"], job["file"])   # the file itself, kept
+                if not src.exists():
+                    src.write_bytes(Path(job["file"]).read_bytes())
+                shutil.rmtree(out, ignore_errors=True)
+                if Path(job["file"]).parent == store.DATA / "uploads":
+                    Path(job["file"]).unlink(missing_ok=True)
+                    Path(job["file"]).with_suffix(".json").unlink(missing_ok=True)
+                PAGES.pop(job["pid"], None)
+                job["readable"] = True
+                job["next"] = self.submit(job["pid"], job["lang"] or None, False)["id"]   # its levels, in the other queue
+                base = store.text_lang(job["pid"])
+                for lang in langs:   # converted again: its other languages made again of the new text (its own first)
+                    if lang not in (base, job["lang"] or base):
+                        self.submit(job["pid"], lang, False)
+            job.update(status="done", finished=time.time())
+        except Exception as e:
+            if job["kind"] == "convert":   # what the engine wrote before it failed
+                shutil.rmtree(store.DATA / "uploads" / f"{job['pid']}-{job['tier']}", ignore_errors=True)
+            self._end(job, e, stop)
 
     def list(self):
         now = time.time()
@@ -682,10 +696,22 @@ def make_handler(jobs):
             self.send(code, json.dumps(obj, ensure_ascii=False))
 
         def do_GET(self):
+            with chatgpt.reader(self.headers.get(chatgpt.READER_HEADER)):
+                self.get()
+
+        def get(self):
             if not addressed_here(self.headers.get("Host")):   # (DNS rebinding: the module's docstring)
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
             try:
+                if u.path == chatgpt.CALLBACK:
+                    return self.chatgpt_callback(u.query)
+                if u.path == chatgpt.CALLBACK + "/done":
+                    return self.send(200, '<!doctype html><meta charset="utf-8"><title>TextFold</title>'
+                                     '<main><h1>Return to TextFold</h1><p>You can close this browser tab.</p></main>',
+                                     "text/html; charset=utf-8")
+                if u.path == "/api/chatgpt/status":
+                    return self.json(chatgpt.connection.status())
                 if u.path == "/":
                     return self.send(200, landing_page(jobs), "text/html; charset=utf-8")
                 if u.path == "/notes":
@@ -842,7 +868,30 @@ def make_handler(jobs):
             except Exception as e:
                 self.json({"error": str(e)}, 500)
 
+        def chatgpt_callback(self, query):
+            port = self.server.server_address[1]
+            if self.headers["Host"] != f"127.0.0.1:{port}":
+                return self.json({"error": "misdirected"}, 421)
+            try:
+                values = parse_qs(query, keep_blank_values=True, max_num_fields=16)
+            except ValueError:
+                return self.json({"error": "Invalid ChatGPT sign-in response."}, 400)
+            if any(len(items) != 1 for items in values.values()):
+                return self.json({"error": "Invalid ChatGPT sign-in response."}, 400)
+            if not chatgpt.connection.finish({k: v[0] for k, v in values.items()}, port):
+                return self.json({"error": "This ChatGPT sign-in is no longer pending in TextFold."}, 400)
+            self.send_response(303)
+            self.send_header("Location", chatgpt.CALLBACK + "/done")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def do_POST(self):
+            with chatgpt.reader(self.headers.get(chatgpt.READER_HEADER)):
+                self.post()
+
+        def post(self):
             if not addressed_here(self.headers.get("Host")):
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
@@ -872,6 +921,10 @@ def make_handler(jobs):
                 if size > 12_000_000:   # a Markdown file is far smaller; this is a request gone wrong
                     return self.json({"error": "too-large"}, 413)
                 body = json.loads(self.rfile.read(size) or b"{}")
+                if u.path.startswith("/api/chatgpt/"):
+                    if not origin or not chatgpt.reader_key():
+                        return self.json({"error": "Open this control in your local TextFold tab."}, 403)
+                    return self.chatgpt_action(u.path, body)
                 s = models.load_settings()
                 if u.path == "/api/storage":
                     try:
@@ -1268,6 +1321,31 @@ def make_handler(jobs):
                 self.json({"error": "not found"}, 404)
             except Exception as e:
                 self.json({"error": str(e)}, 500)
+
+        def chatgpt_action(self, path, body):
+            connection = chatgpt.connection
+            try:
+                if path == "/api/chatgpt/start":
+                    url = connection.start(self.server.server_address[1], consent=body.get("consent") is True,
+                                           new_account=body.get("newAccount") is True)
+                    def launch():
+                        try:
+                            webbrowser.open(url)
+                        except (OSError, webbrowser.Error):
+                            pass
+                    threading.Thread(target=launch, daemon=True).start()
+                    return self.json({**connection.status(), "url": url})
+                if path == "/api/chatgpt/retry":
+                    connection.retry()
+                elif path == "/api/chatgpt/disconnect":
+                    connection.clear()
+                else:
+                    return self.json({"error": "not found"}, 404)
+                return self.json(connection.status())
+            except chatgpt.SignInError as error:
+                return self.json({"error": str(error)}, 409)
+            except OSError:
+                return self.json({"error": "TextFold could not save its local ChatGPT registration."}, 500)
 
         def log_message(self, *args):
             pass

@@ -161,11 +161,14 @@ TextFold 可以使用你已有的模型。使用 AI 功能前，请在 **设置 
 
 | 你有 | 怎么做 |
 |---|---|
+| 符合条件的 ChatGPT 订阅 | 在 **设置 → 使用你的 ChatGPT 订阅** 中点 **使用 ChatGPT 继续**，在 OpenAI 的浏览器页面授权使用订阅额度，然后选择 **ChatGPT plan** 下的模型。[OpenAI 的订阅用量说明](https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites) |
 | Claude Code、Codex、Pi、WorkBuddy 或 Antigravity | 选择对应 Agent 下的模型。刚安装或连接时可先点 **重新扫描**。WorkBuddy 和 Antigravity 为试验功能。 |
 | 可使用 Codex 的 ChatGPT 账号 | 在官方 Codex CLI 中运行 `codex login`，在浏览器中完成登录。然后在 TextFold 的 **设置** 中点 **重新扫描**，选择 **Codex** 下的模型。登录由 CLI 管理，TextFold 交给它的模型请求会发往 OpenAI。 [Codex 登录说明](https://learn.chatgpt.com/docs/auth#codex-cli) |
-| 通过可选的 Node.js 本地桥使用 ChatGPT | 点 **使用我的 ChatGPT 订阅** 会启动第三方 `openai-oauth` 工具。它可使用已保存的 Codex 登录，或打开浏览器登录。 |
+| 通过可选的 Node.js 本地桥使用 ChatGPT | **设置 → 供应商** 中的 **ChatGPT（本地桥）** 会启动第三方 `openai-oauth` 工具。它可使用已保存的 Codex 登录，或打开浏览器登录。 |
 | 什么都还没有 | 点 **OpenRouter 一键授权**，授权后选择模型。 |
 | 一个 API key | **设置 › 添加供应商**：Anthropic、OpenAI、DeepSeek、通义千问、智谱 GLM、Kimi、MiniMax、Google、Ollama，或任何 OpenAI 兼容接口。 |
+
+请在自己的电脑上运行 TextFold 并使用 ChatGPT 登录。登录与授权使用订阅额度是两个步骤。选择 ChatGPT 订阅模型后，TextFold 会将请求所需的文档文本或问题发给 OpenAI。令牌只保存在内存中，重启后请重新连接。可通过设置中的 **管理用量** 在 ChatGPT 中查看或限制用量。
 
 回答问题可以用比生成层级更强的模型：**设置 › 模型 › 回答问题**，还可以选推理强度。
 

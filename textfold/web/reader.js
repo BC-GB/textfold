@@ -2145,7 +2145,7 @@
   const notesOf = new Map();   // uid -> its notes
   let keepMine = store.get('dr-keep-mine') === '1';   // "keep my highlights" (a viewer's preference: kept in this browser)
   const NOTES_KEY = `dr-notes:${D.meta.id}${D.saved ? ':' + D.saved : ''}`;
-  const post = (path, body, signal) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal })
+  const post = (path, body, signal) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...window.DRChatGPTHeaders?.(path) }, body: JSON.stringify(body), signal })
     .then((r) => r.json().then((d) => (r.ok ? d : Promise.reject(new Error(d.error || r.status)))));
   const noteId = () => 'n-' + Math.random().toString(36).slice(2, 10);
   // a note's target: a paragraph (its id), a section ("§" and its id: its one-line summary, or its title), or the
