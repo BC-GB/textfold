@@ -114,7 +114,9 @@ Chrome、Edge 和 Brave 上的一个按钮，把你正在读的网页按你看�
 
 ## 开始使用
 
-**[下载软件](https://chenxiachan.github.io/textfold/zh.html#download)**，有 macOS（Apple 芯片或 Intel）和 Windows 版。需要的东西都在里面，包括 Python。
+要运行本分支，请使用下方的源码说明。上游项目提供桌面安装包和 Python 包。
+
+**[下载上游软件](https://chenxiachan.github.io/textfold/zh.html#download)**，有 macOS（Apple 芯片或 Intel）和 Windows 版。需要的东西都在里面，包括 Python。
 
 也可以装 Python 包，任何系统都能用，也能接进你自己的流程：
 
@@ -123,12 +125,12 @@ python3 -m pip install textfold
 python3 -m textfold serve
 ```
 
-在浏览器里打开 `http://localhost:3017`。第一次使用先[连接一个模型](#连接模型)，然后粘贴链接或拖入文件，再选择语言。需要 Python 3.9 或更新的版本（macOS 自带的就可以）。
+在浏览器里打开 `http://localhost:3017`，然后粘贴链接或拖入文件。生成层级、翻译或提问前，请[连接并选择模型](#连接模型)。需要 Python 3.9 或更新的版本。
 
 | 粘贴或拖入 | TextFold 读到的 |
 |---|---|
 | 论文的链接或 DOI：arXiv、PubMed Central、bioRxiv、medRxiv | 网站上结构化的正文（arXiv 论文没有 HTML 版本时读它的 PDF；其他 DOI 要在 Europe PMC 有开放全文） |
-| 其他任何网页 | 它的正文，去掉菜单、广告，以及网页对读者隐藏的文字；交互图如果是单独的一页（很多研究博客这样嵌入），会在原来的位置照常运行；为 MathJax 或 KaTeX 写的公式按原样显示 |
+| 其他任何网页 | 它的正文，去掉菜单、广告和隐藏的文字。点击后加载交互图。MathJax 或 KaTeX 的公式按原样显示。 |
 | 浏览器里打开的网页 | 你看到的样子，登录后、订阅后、由脚本画出来的内容都在：点 TextFold 按钮。[在浏览器里用 ↑](#在浏览器里用) |
 | 维基百科条目、GitHub 仓库 | 条目；README，连同里面的图 |
 | PDF | 如果它是网上能读到的论文，就读网上的版本，你的文件放在旁边对照；其他 PDF 在你的电脑上读：不装引擎 TextFold 自己就能读，图也会裁出来；装了 PDF 引擎读得更完整（MinerU，约 3.4 GB，在首页安装一次即可），扫描件需要它 |
@@ -140,10 +142,10 @@ python3 -m textfold serve
 读过的文档保存在系统存放应用数据的文件夹里，和桌面 App 共用。
 
 <details>
-<summary>也可以直接从代码运行</summary>
+<summary>从源码运行本分支</summary>
 
 ```bash
-git clone https://github.com/chenxiachan/textfold.git
+git clone https://github.com/BC-GB/textfold.git
 cd textfold
 python3 -m pip install -r requirements.txt
 python3 -m textfold serve
@@ -155,13 +157,14 @@ python3 -m textfold serve
 
 ## 连接模型
 
-TextFold 用你已有的模型，不需要注册账号。启动时它会自己去找；一个都没找到时，首页会给出接入的方式。
+TextFold 可以使用你已有的模型。使用 AI 功能前，请在 **设置 › 模型** 中选择模型和供应商。如果保存的连接发生变化，或者模型已不可用，请重新选择。旧设置需要重新选择一次来确认连接。
 
 | 你有 | 怎么做 |
 |---|---|
-| Claude Code、Codex、Pi、WorkBuddy 或 Antigravity | 什么都不用做，TextFold 会自动找到并使用。WorkBuddy（试验）用你登录的账号和它的模型；单独安装的 CodeBuddy 命令行也可以。Antigravity 的命令行 agy（试验）用你的 Google 账号。 |
-| ChatGPT 订阅 | 点 **使用我的 ChatGPT 订阅**。电脑上会启动一个小的本地桥，用你的账号登录（需要 Node.js）。 |
-| 什么都还没有 | 点 **OpenRouter 一键授权**。授权一次，免费模型马上可用。 |
+| Claude Code、Codex、Pi、WorkBuddy 或 Antigravity | 选择对应 Agent 下的模型。刚安装或连接时可先点 **重新扫描**。WorkBuddy 和 Antigravity 为试验功能。 |
+| 可使用 Codex 的 ChatGPT 账号 | 在官方 Codex CLI 中运行 `codex login`，在浏览器中完成登录。然后在 TextFold 的 **设置** 中点 **重新扫描**，选择 **Codex** 下的模型。登录由 CLI 管理，TextFold 交给它的模型请求会发往 OpenAI。 [Codex 登录说明](https://learn.chatgpt.com/docs/auth#codex-cli) |
+| 通过可选的 Node.js 本地桥使用 ChatGPT | 点 **使用我的 ChatGPT 订阅** 会启动第三方 `openai-oauth` 工具。它可使用已保存的 Codex 登录，或打开浏览器登录。 |
+| 什么都还没有 | 点 **OpenRouter 一键授权**，授权后选择模型。 |
 | 一个 API key | **设置 › 添加供应商**：Anthropic、OpenAI、DeepSeek、通义千问、智谱 GLM、Kimi、MiniMax、Google、Ollama，或任何 OpenAI 兼容接口。 |
 
 回答问题可以用比生成层级更强的模型：**设置 › 模型 › 回答问题**，还可以选推理强度。

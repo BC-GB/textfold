@@ -17,9 +17,18 @@
     return el.shadowRoot;
   };
   let frames = 0;
+  const privateName = /csrf|xsrf|token|nonce|password|secret|credential|authorization|api[-_]?key|session[-_]?id/i;
   const attrs = (el, extra) => {
     let s = '';
-    for (const a of el.attributes) s += ` ${a.name}="${q(a.value)}"`;
+    for (const a of el.attributes) {
+      const name = a.name.toLowerCase();
+      if (name.startsWith('on') || privateName.test(name) || ['srcdoc', 'action', 'formaction'].includes(name)) continue;
+      if (['input', 'button', 'select', 'option'].includes(el.localName)) {
+        if (['checked', 'selected', 'aria-checked', 'aria-selected', 'aria-valuenow', 'aria-valuetext'].includes(name)) continue;
+        if (name === 'value' && !(el.localName === 'input' && ['button', 'reset', 'submit'].includes(el.type))) continue;
+      }
+      s += ` ${a.name}="${q(a.value)}"`;
+    }
     for (const [k, v] of extra) s += ` ${k}="${q(v)}"`;
     return s;
   };
@@ -27,6 +36,11 @@
     if (n.nodeType === 3) return esc(n.data);
     if (n.nodeType !== 1) return '';
     const tag = n.localName;
+    // Keep the article, its diagrams and button labels. Editor contents and form state are private to the live page.
+    if (tag === 'textarea' || (tag === 'input' && ['hidden', 'password'].includes(n.type)) || n.isContentEditable ||
+        ['textbox', 'searchbox'].includes(n.getAttribute('role'))) return '';
+    if (tag === 'meta' && (n.hasAttribute('http-equiv') ||
+        ['name', 'property', 'itemprop'].some((key) => privateName.test(n.getAttribute(key) || '')))) return '';
     if (tag === 'slot') {
       const got = n.assignedNodes({ flatten: true });
       return (got.length ? got : [...n.childNodes]).map((c) => ser(c, body)).join('');

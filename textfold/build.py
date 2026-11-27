@@ -12,7 +12,7 @@ import io
 import json
 import re
 import urllib.parse
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 
 from PIL import Image
@@ -91,6 +91,9 @@ def _katex_beside(base):
 
 ANIMATED_INSIDE = 2_000_000   # a moving picture larger than this goes into a single-file page as its first frame
 
+# parse() serialized every image attribute with quotes. Match the src, skipping other quoted attributes in full.
+IMAGE_SRC = re.compile(r"""(<img\b(?:[^'"<>]|"[^"]*"|'[^']*')*?\s)src=(?:"([^"]*)"|'([^']*)')""", re.I)
+
 
 def data_uri(f, max_side=1600):
     if f.suffix.lower() == ".svg":  # vector stays vector: crisp at every zoom, and small for line plots
@@ -118,10 +121,21 @@ def inline_images(doc, app=False):
     pid = urllib.parse.quote(meta["id"])
     uris = {src: (f"/p/{pid}/{path}" if app and not path.lower().endswith(".svg") else data_uri(cache / path.split("/", 1)[1]))
             for src, path in local.items()}
-    for b in doc["blocks"]:
-        if "html" in b:
-            for src, uri in uris.items():
-                b["html"] = b["html"].replace(f'src="{src}"', f'src="{uri}"')
+    if doc["images"]:
+        def image_src(match):
+            src = unescape(match[2] if match[2] is not None else match[3])
+            if src.startswith("data:"):
+                return match[0]
+            uri = uris.get(src)
+            # An unavailable figure keeps its alt text, without a browser request on opening the page.
+            return match[1] + (f'src="{escape(uri, quote=True)}"' if uri else "")
+
+        for part in (*doc["blocks"], *doc["chunks"], *doc["atoms"].values()):
+            key = "title" if part.get("k") == "box" else "html"
+            if part.get(key) and "<img" in part[key]:
+                part[key] = IMAGE_SRC.sub(image_src, part[key])
+        if doc["bib"]:
+            doc["bib"] = IMAGE_SRC.sub(image_src, doc["bib"])
     from . import pdffigs   # an arXiv paper's drawings with words: cut from its PDF where the reader asked, else offered
     pdffigs.place(doc, cache, lambda name: f"/p/{pid}/img/{name}" if app else data_uri(cache / name))
 
@@ -138,7 +152,8 @@ def payload(doc, app, katex=None, saved=None, pdf=None, mermaid=None):
         data["pdfAt"] = pdf
     if saved:   # saved from the reader: its notes (kept apart from any other page's in the viewer's browser), its language
         data.update(saved)
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    # Keep the data in its JSON script element, including text quoted from source HTML.
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
 
 
 def page(doc, app=False, assets=None, saved=None, pdf=None):
@@ -169,8 +184,10 @@ def page(doc, app=False, assets=None, saved=None, pdf=None):
         if not assets and _has_diagram(doc):
             head += _mermaid_inside()
             mermaid = "inside"
-    return (t.replace("{{TITLE}}", escape(doc["meta"].get("name") or doc["meta"]["title"])).replace("{{HEAD}}", head).replace("{{CLASS}}", cls)
-             .replace("{{SIDEBAR}}", side).replace("{{SCRIPTS}}", scripts).replace("{{DATA}}", payload(doc, app, katex, saved, pdf, mermaid)))
+    fields = {"TITLE": escape(doc["meta"].get("name") or doc["meta"]["title"]), "HEAD": head, "CLASS": cls,
+              "SIDEBAR": side, "SCRIPTS": scripts, "DATA": payload(doc, app, katex, saved, pdf, mermaid)}
+    # Only the template supplies placeholders. A title can itself contain literal {{DATA}}.
+    return re.sub(r"\{\{([A-Z]+)\}\}", lambda m: fields[m.group(1)], t)
 
 
 def export(pid):

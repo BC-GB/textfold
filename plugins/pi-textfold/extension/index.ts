@@ -21,7 +21,7 @@ import { hasBeenWelcomed, keysFile, loadKeys, markWelcomed, saveKeys, type KeysM
 import { guardDigit } from "./guard";
 import { foldPanelLines, PANEL_KEY } from "./panel";
 import { KEY, levelAtColumn, levelRow, parseLevelArg, type Level } from "./level";
-import { ENTRY_TYPE, levelEntryDraft, restoredLevel } from "./persist";
+import { ENTRY_TYPE, assistantText, levelEntryDraft, restoredLevel, restoredReply } from "./persist";
 
 // Debug tap: writes every shortcut/apply/restore decision when TEXTFOLD_PI_DEBUG
 // is set. Zero-cost otherwise.
@@ -121,7 +121,7 @@ export default function textfoldFold(pi: ExtensionAPI) {
 				// naming the row they want in full.
 				const expanded = options.expanded === true;
 				return {
-					render: (width: number): string[] => {
+					render: (width: number) => {
 						const lines = inner.render(width);
 						if (expanded) return lines;
 						const folded = foldToolLines(lines, level, ctx.isError === true);
@@ -198,11 +198,12 @@ export default function textfoldFold(pi: ExtensionAPI) {
 
 		const branch = (ctx?.sessionManager as unknown as { getBranch?: () => unknown[] } | undefined)?.getBranch?.();
 		const restored = restoredLevel(branch);
+		lastAssistant = restoredReply(branch);
 		DEBUG?.(`restore reason=${(event as { reason?: string }).reason} entries=${Array.isArray(branch) ? branch.length : -1} restored=${restored}`);
 		if (restored && restored !== level) {
-			level = restored as Level;
 			ctx?.ui.notify(`TextFold level restored: ${levelName(restored)}`, "info");
 		}
+		level = restored ?? 1;
 		install(ctx);
 		ctx?.ui.setWidget(PANEL_KEY, foldPanelLines(lastAssistant, level, 78, learnedKeys));
 		// First-run pointer: no taught keys and no level history means the reader
@@ -252,8 +253,7 @@ export default function textfoldFold(pi: ExtensionAPI) {
 	pi.on("message_end", (event, ctx) => {
 		const m = event.message as { role?: string; content?: Array<{ type?: string; text?: string }> };
 		DEBUG?.(`message_end role=${m?.role} blocks=${Array.isArray(m?.content) ? m.content.length : -1}`);
-		if (m?.role !== "assistant" || !Array.isArray(m.content)) return;
-		const text = m.content.filter((b) => b?.type === "text" && b.text).map((b) => b.text).join("\n\n");
+		const text = assistantText(m);
 		if (text) {
 			lastAssistant = text;
 			ctx?.ui.setWidget(PANEL_KEY, foldPanelLines(lastAssistant, level, 78, learnedKeys));

@@ -126,7 +126,7 @@ class Generic(unittest.TestCase):
 class Command(unittest.TestCase):
     def test_try_and_keep(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(store, "DATA", Path(tmp)), \
-                mock.patch("textfold.local.prefetch", lambda srcs: {}):
+                mock.patch("textfold.local.prefetch", lambda srcs, **kw: {}):
             snap, rec = Path(tmp) / "page.html", Path(tmp) / "recipe.json"
             snap.write_text(PAGE, encoding="utf-8")
             rec.write_text(json.dumps(RECIPE), encoding="utf-8")

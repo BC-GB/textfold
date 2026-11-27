@@ -20,6 +20,7 @@ import urllib.request
 
 from . import local, markdown, store
 from .fetch import UA, urlread
+from .web_requests import PageRequests
 
 LIMIT = 8 * 2**20   # no article's page is larger
 MIN_WORDS = 80      # fewer: a page that shows its text with scripts, or behind a sign-in
@@ -45,17 +46,25 @@ def register(url):
     return pid
 
 
-def _get(url):
+class WebPDF(ValueError):
+    def __init__(self, url, requests):
+        super().__init__("web-pdf")
+        self.url = url
+        self.requests = requests
+
+
+def _get(url, requests=None):
+    requests = requests or PageRequests(url)
     req = urllib.request.Request(url, headers={**UA, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"})
 
     def check(r):
         ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype == "application/pdf" or r.url.lower().split("?")[0].endswith(".pdf"):
-            raise ValueError("web-pdf")
+            raise WebPDF(r.geturl(), requests)
         if ctype and "html" not in ctype and "xml" not in ctype:
             raise ValueError("web-notext")
     try:
-        data, final, headers = urlread(req, 30, LIMIT + 1, check, busy={500, 502, 504})   # (429 and 503: a wall)
+        data, final, headers = urlread(req, 30, LIMIT + 1, check, busy={500, 502, 504}, open_url=requests.open)   # (429 and 503: a wall)
         return data[:LIMIT], final, headers.get_content_charset()
     except urllib.error.HTTPError as e:
         if e.code in (401, 402, 403, 407, 429, 451, 503):   # a sign-in, a paywall, a wall against programs
@@ -718,15 +727,22 @@ def meta_of(pid, final, info):
             "source": {"kind": "web", "site": info["site"], "url": final}, "label": info["site"]}
 
 
+def image_resolver(html, requests):
+    """Use the same destination policy for parallel downloads and any uncached image."""
+    pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html), open_url=requests.open)
+    return lambda folder: local.Images(folder, None, pre=pre, open_url=requests.open).resolve
+
+
 def fetch(pid, progress=None):
     """Store a web page's article (once)."""
     d = store.pdir(pid)
     if (d / "meta.json").exists() and (d / "source.html").exists():
         return pid
     url = store.read_text(d / "url.txt").strip()
-    data, final, charset = _get(url)
+    requests = PageRequests(url)
+    data, final, charset = _get(url, requests)
     page = data.decode(charset or "utf-8", "replace") if charset else data
     md, html, info = read(page, final)
-    pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html))
+    resolver = image_resolver(html, requests)
     return local.store_doc(pid, html, meta_of(pid, final, info), "source.md", md,
-                           lambda folder: local.Images(folder, None, pre=pre).resolve, sizes=True)
+                           resolver, sizes=True)

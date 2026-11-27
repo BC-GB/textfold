@@ -5,7 +5,7 @@
   "description": "TextFold as an app: the local server and the reader in one window",
   "license": "Apache-2.0",
   "author": "Xia Chen",
-  "repository": "github:chenxiachan/textfold",
+  "repository": "github:BC-GB/textfold",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -17,7 +17,7 @@
     "pack:mac": "npm run payload && electron-builder --mac dir --publish never -c.mac.identity=null -c.mac.notarize=false"
   },
   "devDependencies": {
-    "electron": "^43.3.0",
+    "electron": "^43.8.13",
     "electron-builder": "^26.15.3"
   },
   "build": {
@@ -85,7 +85,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "chenxiachan",
+      "owner": "BC-GB",
       "repo": "textfold"
     },
     "dmg": {

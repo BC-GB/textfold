@@ -91,12 +91,13 @@ Models (⚙ Model & API), ported from ThoughtDAG's model access:
   TextFold's own, written into the scratch folder for the call (our system prompt, the `finish` tool alone, no MCP
   servers, rules or skills of the user's), with `--output-format stream-json`: the answer is the `finish` call's or the
   result's, and the call ends once it is in, since agy goes on with work of its own after it (`agents.run`'s `done`).
-- **Two easy ways in** (`textfold/bridges.py`, as in ThoughtDAG):
-  - **ChatGPT plan, local bridge**: openai-oauth (npm) serves the plan as an OpenAI-compatible endpoint on
+- **Saved model choices** include the selected provider endpoint or agent. A change of destination needs a fresh
+  selection. Codex models use the official CLI's login, managed by `codex login`.
+- **Optional bridges** (`textfold/bridges.py`, as in ThoughtDAG):
+  - **ChatGPT plan, local bridge**: the third-party openai-oauth package serves an OpenAI-compatible endpoint on
     127.0.0.1:10531, signed in with Codex's login (or a browser sign-in). Running, it joins the providers on its own
-    (as a running Ollama does), with its text models; not running, the providers list has a row to start it (`npx -y openai-oauth@2 --detach`; `npx openai-oauth stop` stops it). On the test
-    paper: 174 s with gpt-5.5 at the recommended levels, nothing failed, no cost beyond the plan; a section takes about
-    8 s against 13 s through `codex exec`.
+    (as a running Ollama does), with its text models. The providers list can start it when selected by the reader
+    (`npx -y openai-oauth@2.0.0 --detach`; `npx openai-oauth@2.0.0 stop` stops it).
   - **OpenRouter in one click**: OAuth with PKCE. The server makes the verifier, OpenRouter's consent page sends the
     reader back to `/oauth/openrouter` with a code, the code and verifier become a key, and the key waits in memory
     until the reader picks models and saves. Free models are listed first (the free router, then known makers, never an
@@ -126,8 +127,8 @@ Models (⚙ Model & API), ported from ThoughtDAG's model access:
   translation came back short: translations are made in parts of about 6,500 characters, a paragraph's sentences
   and its levels counted (a section of many short paragraphs has more levels than text: #99).
 - **API providers**: keys from the environment, or a `.env` here or in `~/.textfold/`: Zhipu, Qwen, OpenAI,
-  Anthropic, Google, DeepSeek, Kimi, OpenRouter, Ollama. (Until v0.9 ThoughtDAG's `.env` was read too; its providers
-  were copied once into the settings.) Others are added in the dialog
+  Anthropic, Google, DeepSeek, Kimi, OpenRouter, Ollama. A saved opt-in for ThoughtDAG's legacy `.env` imports that
+  file's providers once into TextFold's settings. Others are added in the dialog
   from ThoughtDAG's presets (OpenRouter, Z.ai, 智谱, GLM Coding, Kimi Code, MiniMax, DeepSeek, OpenAI, Google AI Studio,
   Moonshot, Ollama, a ChatGPT bridge, Anthropic, custom): the endpoint's `/models` is fetched and you pick which to offer.
   Keys added here stay in `~/.textfold/settings.json` (mode 600), outside the project folder. (Under earlier
@@ -327,6 +328,12 @@ words before said `en`: it is read as the text's language until the text is firs
 written so then (`notes.settle_base`).
 
 ## PDFs and web pages
+
+For web imports, the URL chosen by the reader grants access to its exact origin (scheme, host and port) for that import.
+An explicitly selected intranet site can serve its own article and images. Redirects or pictures on other origins must
+resolve entirely to public addresses. The importer connects to a vetted address and preserves the site's HTTP Host and
+TLS identity. It honors HTTP(S) proxies and their bypass settings. Proxy deployments need local DNS resolution and a
+proxy that accepts numerical destinations. Live interactive figures load in the reader's browser.
 
 A PDF dropped on the landing is read in the browser first (pdf.js, `refsOf` in app.js): an arXiv id from its margin
 stamp, a DOI from its metadata or its first page (only the first: the second is often the references). `POST /api/pdfs`

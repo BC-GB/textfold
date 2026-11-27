@@ -290,7 +290,11 @@ def _anthropic(prompt, schema, spec, timeout, system=SYSTEM):
         raise RuntimeError("The Anthropic API needs the SDK: pip install anthropic")
     model = spec["model"]
     # no key stored: the SDK resolves ANTHROPIC_API_KEY or an `ant auth login` profile itself
-    client = anthropic.Anthropic(api_key=spec.get("api_key") or None, timeout=timeout)
+    # Bind the request to the selected endpoint, including when the SDK has its
+    # own base URL in the environment. Redirects must not resend a document.
+    client = anthropic.Anthropic(api_key=spec.get("api_key") or None, timeout=timeout,
+                                 base_url=spec.get("base") or "https://api.anthropic.com",
+                                 http_client=anthropic.DefaultHttpxClient(follow_redirects=False))
     extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"} if model in _FALLBACK_OK else {}
     try:
         for thinking, effort in _anthropic_levels(model, spec.get("effort")):
@@ -317,6 +321,8 @@ def _anthropic(prompt, schema, spec, timeout, system=SYSTEM):
         raise RuntimeError(f"Anthropic API error {e.status_code}: {e.message}")
     except anthropic.APIConnectionError:
         raise RuntimeError("Anthropic API: could not connect")
+    finally:
+        client.close()
     if msg.stop_reason == "refusal":
         raise RuntimeError("Anthropic API: the request was declined")
     if msg.stop_reason == "max_tokens":

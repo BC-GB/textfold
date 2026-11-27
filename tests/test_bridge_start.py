@@ -37,7 +37,7 @@ class BridgeStart(unittest.TestCase):
         npx.parent.mkdir()
         npx.write_text("#!/bin/sh\n" + textwrap.dedent(FAKE[kind]))
         npx.chmod(0o755)
-        refused = mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused"))
+        refused = mock.patch("textfold.llm_openai.open_provider", side_effect=urllib.error.URLError("refused"))
         for p in (refused, mock.patch.object(bridges, "HOME", tmp / "home"), mock.patch.object(bridges, "codex_login", return_value=login),
                   mock.patch.dict(os.environ, {"PATH": f"{npx.parent}{os.pathsep}{os.environ['PATH']}"}),
                   mock.patch("webbrowser.open"), mock.patch.dict(bridges._START, {"thread": None, "login": None, "error": None})):
@@ -68,6 +68,16 @@ class BridgeStart(unittest.TestCase):
 
 
 class Said(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_login_log_is_private_before_any_output_is_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "bridge.log"
+            with bridges._bridge_log(log):
+                self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+            log.chmod(0o644)
+            with bridges._bridge_log(log):
+                self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
     def test_only_this_starts_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "bridge.log"

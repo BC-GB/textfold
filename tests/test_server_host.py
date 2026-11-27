@@ -18,8 +18,9 @@ import time
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
-from textfold import server
+from textfold import bridges, server
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,6 +41,35 @@ class Names(unittest.TestCase):
                      "localhost:31917@attacker.example", "[::1].attacker.example", "127.0.0.2:3017", "0.0.0.0:3017",
                      "localhost:abc", "", None):
             self.assertFalse(server.addressed_here(host), host)
+
+
+class ProviderSettings(unittest.TestCase):
+    def test_reuse_key_only_for_its_provider_origin(self):
+        previous = {"base": "https://models.example/v1", "api_key": "saved-test-value"}
+        self.assertEqual(server.provider_secret({}, "https://models.example:443/v2", previous), previous["api_key"])
+        for changed in ("http://models.example/v1", "https://models.example:8443", "https://other.example"):
+            self.assertEqual(server.provider_secret({}, changed, previous), "")
+            self.assertEqual(server.provider_secret({"api_key": "replacement"}, changed, previous), "replacement")
+
+    def test_openrouter_key_requires_original_provider_and_current_authorization(self):
+        with patch.object(bridges, "_OR", {"minted": "test-value", "at": time.monotonic()}):
+            with self.assertRaises(ValueError):
+                server.provider_secret({"minted": True}, "https://other.example", {})
+            self.assertEqual(server.provider_secret({"minted": True}, "https://openrouter.ai/api/v1", {}), "test-value")
+            bridges.clear_minted("outdated")
+            self.assertEqual(bridges.minted(), "test-value")
+            bridges.clear_minted("test-value")
+            with self.assertRaises(ValueError):
+                server.provider_secret({"minted": True}, "https://openrouter.ai/api/v1", {})
+
+    def test_pending_authorization_expires(self):
+        with patch.object(bridges, "_OR", {"minted": "unused", "at": time.monotonic() - 3600}):
+            self.assertIsNone(bridges.minted())
+
+    def test_oauth_can_return_to_a_reader_path(self):
+        self.assertEqual(server.oauth_return_path("/p/example?lang=en"), "/p/example?lang=en")
+        self.assertEqual(server.oauth_return_path("https://other.example/"), "/")
+        self.assertEqual(server.oauth_return_path("//other.example/"), "/")
 
 
 class Rebinding(unittest.TestCase):
@@ -101,6 +131,15 @@ class Rebinding(unittest.TestCase):
         status, _ = self.ask("POST", "/api/openrouter/start", f"attacker.example:{self.port}", {"back": "/"})
         self.assertEqual(status, 421)   # (its callback would carry the other name)
         self.assertEqual(self.ask("GET", "/api/folders", f"127.0.0.1:{self.port}")[1], b'{"folders": [], "of": {}}')
+
+    def test_browser_posts_require_exact_reader_origin(self):
+        host = f"localhost:{self.port}"
+        path = "/api/unknown"
+        different_port = 32000 if self.port != 32000 else 32001
+        self.assertEqual(self.ask("POST", path, host, {}, f"http://localhost:{different_port}")[0], 403)
+        self.assertEqual(self.ask("POST", path, host, {}, f"https://{host}")[0], 403)
+        for trusted in (None, f"http://{host}"):
+            self.assertEqual(self.ask("POST", path, host, {}, trusted)[0], 404)
 
     def test_this_computer_reads_as_before(self):
         for host in (f"127.0.0.1:{self.port}", f"localhost:{self.port}", f"[::1]:{self.port}"):

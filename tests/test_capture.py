@@ -53,7 +53,7 @@ class Receive(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.data = Path(tmp.name)
-        for p in (mock.patch.object(store, "DATA", self.data), mock.patch("textfold.local.prefetch", lambda srcs: {})):
+        for p in (mock.patch.object(store, "DATA", self.data), mock.patch("textfold.local.prefetch", lambda srcs, **kw: {})):
             p.start()
             self.addCleanup(p.stop)
 
@@ -126,9 +126,15 @@ class ReadingView(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.data = Path(tmp.name)
         for p in (mock.patch.object(store, "DATA", self.data),
-                  mock.patch("textfold.local.prefetch", lambda srcs: {s: (PNG, "fig1.png") for s in srcs})):
+                  mock.patch("textfold.local.prefetch", lambda srcs, **kw: {s: (PNG, "fig1.png") for s in srcs})):
             p.start()
             self.addCleanup(p.stop)
+
+    def test_running_reader_announcement_only_names_its_local_http_port(self):
+        for url in ("https://example.org", "http://127.0.0.1:3017/notes", "http://127.0.0.1:0"):
+            with self.subTest(url=url):
+                (self.data / "server.json").write_text(json.dumps({"url": url, "pid": os.getpid()}), encoding="utf-8")
+                self.assertIsNone(capture._server_url())
 
     @unittest.skipUnless(os.name == 'nt', 'Windows process liveness must not send a signal')
     def test_server_liveness_never_signals_the_running_windows_process(self):

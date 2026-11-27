@@ -13,6 +13,7 @@ import urllib.request
 
 from bs4 import BeautifulSoup
 
+from .web_requests import PUBLIC
 from . import local, markdown, store
 from .fetch import BUSY, UA, urlread
 
@@ -35,7 +36,7 @@ def pid_of(owner, repo):
 def _api(path):
     req = urllib.request.Request(f"https://api.github.com{path}", headers={**UA, "Accept": "application/vnd.github+json"})
     try:
-        return json.loads(urlread(req, 30, busy=BUSY - {429})[0])   # (its limit is an hour's: no use waiting)
+        return json.loads(urlread(req, 30, busy=BUSY - {429}, open_url=PUBLIC.open)[0])   # (its limit is an hour's: no use waiting)
     except urllib.error.HTTPError as e:
         if e.code == 404:   # no such repository, a private one, or one without a README
             raise ValueError("no-readme") from None
@@ -86,5 +87,5 @@ def fetch(pid, progress=None):
             "abs_url": info["html_url"], "html_url": "", "description": info.get("description") or "",
             "license": f"https://spdx.org/licenses/{spdx}.html" if spdx and spdx != "NOASSERTION" else "",
             "source": {"kind": "github", "name": full, "branch": branch}, "label": f"GitHub · {full}"}
-    pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html))   # its pictures, at once
-    return local.store_doc(pid, html, meta, "source.md", text, lambda folder: local.Images(folder, None, pre=pre).resolve, sizes=True)
+    pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html), open_url=PUBLIC.open)   # its pictures, at once
+    return local.store_doc(pid, html, meta, "source.md", text, lambda folder: local.Images(folder, None, pre=pre, open_url=PUBLIC.open).resolve, sizes=True)

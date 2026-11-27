@@ -101,8 +101,10 @@ async function capture(tab) {
       throw new Error((reply && reply.error) || 'no-reply');
     }
     badge(tab.id, '✓', '#3f7d52');
-    chrome.action.setTitle({ tabId: tab.id, title: say(!reply.open ? 'saved_closed' : reply.new === false ? 'already' : 'saved') });
-    if (reply.open) chrome.tabs.create({ url: reply.open, index: tab.index + 1 });
+    const reader = /^http:\/\/127\.0\.0\.1:(\d{1,5})\/p\/(web-[a-z0-9-]+)$/.exec(reply.open || '');
+    const canOpen = reader && Number(reader[1]) > 0 && Number(reader[1]) <= 65535 && reader[2] === reply.paper;
+    chrome.action.setTitle({ tabId: tab.id, title: say(!canOpen ? 'saved_closed' : reply.new === false ? 'already' : 'saved') });
+    if (canOpen) chrome.tabs.create({ url: reply.open, index: tab.index + 1 });
     return reply;
   } catch (e) {
     const code = e && e.message;

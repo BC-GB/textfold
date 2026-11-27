@@ -29,10 +29,10 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^1.2.0",
-    "@earendil-works/pi-tui": "^1.2.0",
+    "@earendil-works/pi-coding-agent": "^1.6.1",
+    "@earendil-works/pi-tui": "^1.6.1",
     "@types/node": "^22.0.0",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.12"
   }
 }

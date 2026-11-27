@@ -21,6 +21,7 @@ import urllib.request
 
 from bs4 import BeautifulSoup
 
+from .web_requests import PUBLIC
 from . import local, store
 from .fetch import UA, urlread
 
@@ -56,7 +57,7 @@ def _get(url, timeout=60, variant=None):
     """variant: the script a Chinese article is converted to (zh-cn). Its source mixes simplified and traditional and
     marks words that must not be converted, which Parsoid's HTML leaves empty until the article is converted."""
     headers = {**UA, **({"Accept-Language": variant} if variant else {})}
-    return urlread(urllib.request.Request(url, headers=headers), timeout)[0]
+    return urlread(urllib.request.Request(url, headers=headers), timeout, open_url=PUBLIC.open)[0]
 
 
 def lookup(lang, title=None, pageid=None):
@@ -195,4 +196,4 @@ def fetch(pid, progress=None):
             "html_url": "", "license": "https://creativecommons.org/licenses/by-sa/4.0/",
             "source": {"kind": "wikipedia", "name": title, "revision": rev}, "label": f"{lang}.wikipedia.org"}
     html = to_html(parsoid)
-    return local.store_doc(pid, html, meta, "source.wiki.html", parsoid, lambda folder: local.Images(folder, None).resolve)
+    return local.store_doc(pid, html, meta, "source.wiki.html", parsoid, lambda folder: local.Images(folder, None, open_url=PUBLIC.open).resolve)

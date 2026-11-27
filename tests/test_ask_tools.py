@@ -85,9 +85,9 @@ class Commands(unittest.TestCase):
 
 class Switch(unittest.TestCase):
     def spec(self, kind, on):
-        with mock.patch.object(models, "ask_choice", lambda s=None, cat=None: (None, None)), \
-             mock.patch.object(models, "resolve", lambda m, s=None: {"kind": kind, "id": "x", "runtime": "codex", "model": "m"}):
-            return models.ask_spec(models.load_settings(), tools=on)
+        with mock.patch.object(models, "catalog", return_value=([{"id": "x", "target": "saved", "kind": kind}], [])), \
+             mock.patch.object(models, "_resolve", return_value={"kind": kind, "id": "x", "runtime": "codex", "model": "m"}):
+            return models.ask_spec({"model": "x", "model_target": "saved"}, tools=on)
 
     def test_only_an_agent_and_only_when_asked(self):
         self.assertTrue(self.spec("agent", True).get("tools"))

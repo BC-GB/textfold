@@ -112,7 +112,7 @@ class Paper(unittest.TestCase):
                 raise DROPPED
             return Response(abs_page, "https://arxiv.org/abs/2512.23916")
 
-        with tempfile.TemporaryDirectory() as tmp, mock.patch("urllib.request.urlopen", side_effect=answer), \
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("textfold.web_requests.PUBLIC.open", side_effect=answer), \
                 mock.patch("textfold.fetch.time.sleep"):
             with self.assertRaises(fetch.Unreachable):
                 fetch.fetch("2512.23916", Path(tmp))
@@ -129,10 +129,10 @@ class Paper(unittest.TestCase):
 class Page(unittest.TestCase):
     def test_a_wall_still_answers_at_once_and_a_bad_gateway_is_asked_again(self):
         waits = []
-        with mock.patch("urllib.request.urlopen", side_effect=[busy(503)]), mock.patch("textfold.fetch.time.sleep", waits.append):
+        with mock.patch("textfold.web_requests.PageRequests.open", side_effect=[busy(503)]), mock.patch("textfold.fetch.time.sleep", waits.append):
             with self.assertRaisesRegex(ValueError, "web-blocked"):
                 webpage._get("https://example.org/post")
-        with mock.patch("urllib.request.urlopen", side_effect=[busy(502), Response(b"<p>words</p>", "https://example.org/post")]), \
+        with mock.patch("textfold.web_requests.PageRequests.open", side_effect=[busy(502), Response(b"<p>words</p>", "https://example.org/post")]), \
                 mock.patch("textfold.fetch.time.sleep", waits.append):
             self.assertEqual(webpage._get("https://example.org/post")[:2], (b"<p>words</p>", "https://example.org/post"))
         self.assertEqual(waits, [1])

@@ -1,6 +1,5 @@
-"""A local service that is not running is not a failed discovery (#24): no Ollama and no ChatGPT bridge, the most common
-case, finds nothing and says nothing; and once the agents and the services are known, a saved model that is gone gives
-way as a generation's does, so the page names the model the next generation uses.
+"""A local service that is not running is not a failed discovery (#24).
+Discovery keeps an unavailable selection visible without making another model active.
 
 Run from the repo root:
     python3 -m unittest discover tests
@@ -37,7 +36,7 @@ class NotRunning(unittest.TestCase):
             time.sleep(.01)
 
     def test_nothing_running_is_nothing_found_not_a_failure(self):
-        with mock.patch("urllib.request.urlopen", side_effect=refused):
+        with mock.patch("textfold.llm_openai.open_provider", side_effect=refused):
             self.refresh()
         self.assertEqual(server.DISCOVERY["error"], "")
         self.assertTrue(server.DISCOVERY["ready"])
@@ -45,29 +44,30 @@ class NotRunning(unittest.TestCase):
 
     def test_a_wrong_answer_still_is_one(self):
         bad = urllib.error.HTTPError("http://localhost:11434/api/tags", 500, "Server Error", {}, None)
-        with mock.patch("urllib.request.urlopen", side_effect=bad):
+        with mock.patch("textfold.llm_openai.open_provider", side_effect=bad):
             self.refresh()
         self.assertIn("Ollama", server.DISCOVERY["error"])
 
 
 class SavedChoice(unittest.TestCase):
     def payload(self, ready, scanned):
-        s = {"model": "gone-model", "providers": []}
+        s = {"model": "gone-model", "model_target": "its-original-provider", "providers": []}
         state = {"scanning": False, "scanned_at": time.time() if scanned else None, "agents": []}
+        other = {"id": "available-model", "target": "another-provider", "name": "Another model"}
         with mock.patch.object(models, "load_settings", return_value=s), \
+             mock.patch.object(models, "catalog", return_value=([other], [])), \
              mock.patch.dict(server.DISCOVERY, {"ready": ready, "live": {"ollama": ["llama3"], "bridge": None}}), \
              mock.patch.dict(agents.STATE, state), \
              mock.patch.object(server.engine, "status", return_value={}):
             return server.models_payload()
 
-    def test_kept_while_not_yet_known(self):
-        self.assertEqual(self.payload(ready=False, scanned=True)["selected"], "gone-model")
-        self.assertEqual(self.payload(ready=True, scanned=False)["selected"], "gone-model")
-
-    def test_gives_way_once_known(self):
-        d = self.payload(ready=True, scanned=True)
-        self.assertNotEqual(d["selected"], "gone-model")
-        self.assertNotIn("gone-model", {m["id"] for m in d["models"]})
+    def test_unavailable_choice_stays_saved_without_activating_another(self):
+        for ready, scanned in ((False, True), (True, False), (True, True)):
+            with self.subTest(ready=ready, scanned=scanned):
+                data = self.payload(ready, scanned)
+                self.assertEqual(data["savedModel"], "gone-model")
+                self.assertIsNone(data["selected"])
+                self.assertEqual([m["id"] for m in data["models"]], ["available-model"])
 
 
 if __name__ == "__main__":

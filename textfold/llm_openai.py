@@ -47,9 +47,41 @@ def auth(base, api_key):
     return {"Authorization": f"Bearer {api_key or 'none'}"}
 
 
+def _origin(url):
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None:
+            return None
+        port = parts.port if parts.port is not None else (443 if parts.scheme == "https" else 80)
+        return parts.scheme, parts.hostname, port
+    except (TypeError, ValueError):
+        return None
+
+
+def same_origin(first, second):
+    origin = _origin(first)
+    return origin is not None and origin == _origin(second)
+
+
+class _ProviderRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not same_origin(req.full_url, newurl):
+            fp.close()
+            raise urllib.error.URLError("Provider redirected to another origin")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def open_provider(request, timeout):
+    """Scope a request and subsequent redirects to the selected provider's HTTP origin."""
+    url = request if isinstance(request, str) else request.full_url
+    if _origin(url) is None:
+        raise urllib.error.URLError("Provider requires an HTTP or HTTPS URL without embedded credentials")
+    return urllib.request.build_opener(_ProviderRedirect()).open(request, timeout=timeout)
+
+
 def _post(url, body, headers, timeout):
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={**UA, **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with open_provider(req, timeout=timeout) as r:
         kind = r.headers.get("Content-Type") or ""
         raw = r.read()
     if "text/event-stream" in kind or raw.lstrip().startswith(b"data:"):   # streamed, asked for or not

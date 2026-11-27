@@ -43,7 +43,7 @@ MATHJAX = '<script>window.MathJax = { tex: { inlineMath: [["$", "$"], ["\\\\(", 
 
 def read(html, url="https://blog.example.org/2026/innocent/"):
     with tempfile.TemporaryDirectory() as tmp, mock.patch.object(store, "DATA", Path(tmp)), \
-            mock.patch.object(webpage, "_get", lambda u: (html.encode(), url, "utf-8")), mock.patch.object(webpage.local, "prefetch", lambda srcs: {}), \
+            mock.patch.object(webpage, "_get", lambda u, requests: (html.encode(), url, "utf-8")), mock.patch.object(webpage.local, "prefetch", lambda srcs, **kw: {}), \
             mock.patch.object(webpage.local.Images, "_read", side_effect=OSError("no network in the tests")):
         pid = webpage.register(url)
         webpage.fetch(pid)

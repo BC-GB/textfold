@@ -8,13 +8,12 @@
 //
 //   node scripts/prepare-payload.mjs                  for this computer
 //   node scripts/prepare-payload.mjs darwin x64       an Intel Mac's, on Apple silicon too (its Python runs under Rosetta)
-//   PBS_URL=<tar.gz url> node scripts/...             a given build
+//   PBS_URL=<https url> PBS_SHA256=<trusted sha256> node scripts/...     a given build
 // A Windows payload is made on Windows: the packages are installed by the Python it ships.
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync, createWriteStream } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { pythonArchive, pythonVersion, unpackPythonArchive } from './python-archive.mjs';
 import { fileURLToPath } from 'node:url';
 
 const desktop = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -27,34 +26,19 @@ if (!TARGET) throw new Error(`no payload for ${platform}-${arch}: ${Object.keys(
 if ((platform === 'win32') !== (process.platform === 'win32')) throw new Error(`a ${platform} payload is made on ${platform}`);
 const WIN = platform === 'win32';
 
-async function cpythonUrl() {
-  if (process.env.PBS_URL) return process.env.PBS_URL;
-  const r = await fetch('https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest', {
-    headers: { 'User-Agent': 'textfold-desktop', ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) },
-  });
-  if (!r.ok) throw new Error(`python-build-standalone releases: HTTP ${r.status}`);
-  const rel = await r.json();
-  const want = new RegExp(`^cpython-3\\.12\\.\\d+\\+\\d+-${TARGET}-install_only_stripped\\.tar\\.gz$`);
-  const asset = rel.assets.find((a) => want.test(a.name));
-  if (!asset) throw new Error(`no CPython 3.12 ${TARGET} build in ${rel.tag_name}`);
-  return asset.browser_download_url;
-}
-
-rmSync(payload, { recursive: true, force: true });
-mkdirSync(payload, { recursive: true });
-
-const url = await cpythonUrl();
-console.log('CPython:', url);
-const res = await fetch(url);
-if (!res.ok) throw new Error(`download: HTTP ${res.status}`);
-await pipeline(Readable.fromWeb(res.body), createWriteStream(path.join(payload, 'python.tar.gz')));
-// a relative name, run from the folder: Windows' own tar and Git's GNU tar both read it (GNU tar takes C:\… for a host)
-execFileSync('tar', ['-xzf', 'python.tar.gz'], { cwd: payload, stdio: 'inherit' });
-rmSync(path.join(payload, 'python.tar.gz'));
+const archive = pythonArchive(TARGET, process.env);
+console.log('CPython:', TARGET, archive.sha256);
+await unpackPythonArchive(archive, payload);
 const py = WIN ? path.join(payload, 'python', 'python.exe') : path.join(payload, 'python', 'bin', 'python3');
 // an Intel Mac's Python on Apple silicon runs under Rosetta, and pip then picks the Intel wheels
 const run = (args, opts) => execFileSync(platform === 'darwin' && arch !== process.arch ? 'arch' : py,
   platform === 'darwin' && arch !== process.arch ? [arch === 'x64' ? '-x86_64' : '-arm64', py, ...args] : args, opts);
+
+// Custom archives must support the same Python series and security patch floor.
+run(['-I', '-S', '-c',
+  'import sys; floor=tuple(map(int, sys.argv[1].split("."))); ' +
+  'sys.exit(0 if sys.version_info[:2] == floor[:2] and sys.version_info[:3] >= floor else "Unexpected Python version for desktop payload")',
+  pythonVersion], { stdio: 'inherit' });
 
 // The Anthropic API's SDK too: pip leaves it to those who want it (requirements.txt), but a person who picks the
 // Anthropic API in the app's Settings has no pip to install it with (#14)

@@ -30,7 +30,7 @@ ENV_PROVIDERS = [
      "models": ["qwen-plus", "qwen-vl-plus"]},
     {"key": "openai", "name": "OpenAI", "env": ["OPENAI_API_KEY"], "list": "OPENAI_MODELS", "base": "https://api.openai.com/v1",
      "models": ["gpt-5.1", "gpt-5-mini"]},
-    {"key": "anthropic", "name": "Anthropic", "env": ["ANTHROPIC_API_KEY"], "list": "ANTHROPIC_MODELS", "protocol": "anthropic",
+    {"key": "anthropic", "name": "Anthropic", "env": ["ANTHROPIC_API_KEY"], "list": "ANTHROPIC_MODELS", "protocol": "anthropic", "base_env": "ANTHROPIC_BASE_URL",
      "models": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"]},
     {"key": "google", "name": "Google", "env": ["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"], "list": "GOOGLE_MODELS",
      "base": "https://generativelanguage.googleapis.com/v1beta/openai", "models": ["gemini-2.5-pro", "gemini-2.5-flash"]},
@@ -84,11 +84,10 @@ def _read_env_file(f):
     return out
 
 
-def environment(use_thoughtdag=True):
+def environment():
     """The variables providers read: .env files fill in, a variable already set in the shell wins (as in ThoughtDAG)."""
     env = {}
-    files = ENV_FILES + ([THOUGHTDAG_ENV] if use_thoughtdag else [])
-    for f in reversed(files):  # earlier files take precedence
+    for f in reversed(ENV_FILES):  # earlier files take precedence
         env.update(_read_env_file(f))
     env.update({k: v for k, v in os.environ.items()})
     return env
@@ -104,8 +103,17 @@ def _ids(env, p):
     return [s.strip() for s in raw.split(",") if s.strip()] if raw else list(p["models"])
 
 
-def env_providers(use_thoughtdag=True, ollama_live=None):
-    env = environment(use_thoughtdag)
+def env_providers(use_thoughtdag=False, ollama_live=None):
+    out = _configured(environment(), "env", ollama_live)
+    if use_thoughtdag:
+        # Migrate only complete entries from the opted-in file. Never pair another
+        # environment's key with a destination or model list from this file.
+        have = {p["key"] for p in out}
+        out.extend(p for p in _configured(_read_env_file(THOUGHTDAG_ENV), "thoughtdag") if p["key"] not in have)
+    return out
+
+
+def _configured(env, source, ollama_live=None):
     out = []
     for p in ENV_PROVIDERS:
         key = next((env[k] for k in p["env"] if env.get(k)), "")
@@ -117,8 +125,6 @@ def env_providers(use_thoughtdag=True, ollama_live=None):
                 continue
         elif not key:
             continue
-        source = "thoughtdag" if use_thoughtdag and any(k in _read_env_file(THOUGHTDAG_ENV) for k in p["env"] + [p.get("list", "")]) \
-            and not any(os.environ.get(k) for k in p["env"]) else "env"
         out.append({"key": p["key"], "name": p["name"], "protocol": p.get("protocol", "openai"), "base": base,
                     "api_key": key or ("ollama" if p.get("nokey") else ""), "source": source,
                     "models": [{"id": i, "name": p.get("names", {}).get(i) or f"{short(i)} ({p['name']})"} for i in ids]})
@@ -155,7 +161,7 @@ def ollama_models(base="http://localhost:11434", strict=False):
     """What a running Ollama has pulled ([] when it is not running). strict: a probe that failed for another reason than
     nothing answering raises, so the discovery keeps its last result."""
     try:
-        with urllib.request.urlopen(f"{base.rstrip('/')}/api/tags", timeout=1.5) as r:
+        with llm_openai.open_provider(f"{base.rstrip('/')}/api/tags", timeout=1.5) as r:
             return [m["name"] for m in json.loads(r.read()).get("models", [])]
     except Exception as e:
         if strict and not unreachable(e):
@@ -167,7 +173,7 @@ def probe(base, api_key, timeout=15):
     """GET {base}/models (ThoughtDAG server.mjs:799-824): [{id, created?, vision?, contextLength?}]."""
     req = urllib.request.Request(f"{base.rstrip('/')}/models", headers={**llm_openai.UA, **llm_openai.auth(base, api_key)})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with llm_openai.open_provider(req, timeout=timeout) as r:
             body = json.loads(r.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code}: {e.read()[:200].decode(errors='replace')}")

@@ -29,6 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: One version, in the code, the app and the tag
         run: |
           code=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' textfold/__init__.py)
@@ -65,6 +67,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -86,7 +90,6 @@ jobs:
           npm run ${{ matrix.script }} ${VERSION:+-- -c.extraMetadata.version=$VERSION}
         env:
           VERSION: ${{ inputs.version }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # the payload script asks GitHub for the newest CPython build
           CSC_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CERT_PASSWORD && secrets.MAC_CERT_P12_BASE64 || '' }}
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CERT_PASSWORD || '' }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -127,6 +130,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: textfold-mac-*

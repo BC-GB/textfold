@@ -123,10 +123,15 @@ function heard(chunk) {
 }
 
 async function waitReady(port, tries = 160) {
+  const url = `http://127.0.0.1:${port}`;
+  const announcement = path.join(app.getPath('userData'), 'server.json');
   for (let i = 0; i < tries || (copying && server); i++) {
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/models`);
-      if (r.ok) return true;
+      const record = JSON.parse(await fs.promises.readFile(announcement, 'utf8'));
+      if (server && record.pid === server.pid && record.url === url) {
+        const r = await fetch(`${url}/api/langs`, { redirect: 'error' });
+        if (r.ok && server?.pid === record.pid) return true;
+      }
     } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -198,7 +203,7 @@ function startServer(port) {
   server.stdout.pipe(stamped()).pipe(log, { end: false });
   server.stderr.pipe(stamped()).pipe(log, { end: false });
   server.stdout.on('data', heard);
-  server.on('exit', (code) => { server = null; if (code && win && !win.isDestroyed()) win.webContents.send?.('server-exit', code); });
+  server.on('exit', (code) => { base = null; server = null; if (code && win && !win.isDestroyed()) win.webContents.send?.('server-exit', code); });
   registerHost(env, log);
 }
 
@@ -225,15 +230,19 @@ async function open() {
   win.loadFile(path.join(__dirname, 'splash.html'));
   // full screen, from View › Toggle Full Screen or the reader's Aa: the page told when it changes (its button's name)
   for (const ev of ['enter-full-screen', 'leave-full-screen']) win.on(ev, () => win.webContents.send('fullscreen', win.isFullScreen()));
-  const local = (url) => /^http:\/\/(127\.0\.0\.1|localhost):\d+\//.test(url);
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-  win.webContents.on('will-navigate', (e, url) => {
-    if (local(url) || url.startsWith('file:')) return;
+  const navigate = (e, legacyUrl) => {
+    const url = e.url ?? legacyUrl;
+    if (links.isReaderPage(url, base)) return;
     e.preventDefault();
     if (/^https?:/.test(url)) shell.openExternal(url);
+  };
+  win.webContents.on('will-navigate', navigate);
+  win.webContents.on('will-redirect', (e, url, _inPlace, mainFrame) => {
+    if (e.isMainFrame ?? mainFrame) navigate(e, url);
   });
 
   const port = await freePort();
@@ -248,11 +257,21 @@ async function open() {
   else win.loadURL(`${base}/`);
 }
 
-ipcMain.handle('open-external', (_e, url) => (/^https?:/.test(url) ? shell.openExternal(url) : null));
+function handleReader(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!win || win.isDestroyed() || event.sender !== win.webContents ||
+        event.senderFrame !== win.webContents.mainFrame || !links.isReaderPage(event.senderFrame?.url, base)) {
+      throw new Error('This action needs an open TextFold reader.');
+    }
+    return handler(event, ...args);
+  });
+}
+
+handleReader('open-external', (_e, url) => (/^https?:/.test(url) ? shell.openExternal(url) : null));
 // a file the reader saves (a page, its notes, a figure's picture): where it goes, they choose in the system's own
 // dialog; the path, or null. A page is text, a picture its bytes
 const KINDS = { html: 'Web page', md: 'Markdown', json: 'JSON', png: 'PNG image', jpg: 'JPEG image', gif: 'GIF image', webp: 'WebP image', svg: 'SVG image' };
-ipcMain.handle('save-file', async (e, name, data) => {
+handleReader('save-file', async (e, name, data) => {
   const ext = path.extname(String(name)).slice(1).toLowerCase();
   if (!KINDS[ext]) return null;
   const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
@@ -265,7 +284,7 @@ ipcMain.handle('save-file', async (e, name, data) => {
 });
 // the folder the library is to go to, or the library to open (Settings: textfold/storage_settings.py), in the system's
 // own dialog: its path, or null
-ipcMain.handle('storage:choose-folder', async (e) => {
+handleReader('storage:choose-folder', async (e) => {
   const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { title: 'TextFold', properties: ['openDirectory', 'createDirectory'] });
   return r.canceled ? null : r.filePaths[0] || null;
 });
@@ -284,7 +303,7 @@ function tell(s) {
 function answer(s) {
   if (win && !win.isDestroyed()) win.webContents.send('update', { ...s, transient: true });
 }
-const REPO = 'https://github.com/chenxiachan/textfold';
+const REPO = 'https://github.com/BC-GB/textfold';
 // The first launch after an update: what the update left is cleared (the page says what is new: news.py). A first
 // install has nothing to clear: the version it records is the next one's "was".
 function updatedFrom() {
@@ -310,19 +329,19 @@ function dropDownloaded(again = true) {
     if (dir && again) setTimeout(() => dropDownloaded(false), 60 * 1000);
   }
 }
-ipcMain.handle('app:version', () => app.getVersion());
-ipcMain.handle('window:fullscreen', (e, on) => {   // on: true or false; nothing: only whether it is
+handleReader('app:version', () => app.getVersion());
+handleReader('window:fullscreen', (e, on) => {   // on: true or false; nothing: only whether it is
   const w = BrowserWindow.fromWebContents(e.sender);
   if (w && typeof on === 'boolean') w.setFullScreen(on);
   return Boolean(w && w.isFullScreen());
 });
-ipcMain.handle('update:state', () => (update && !update.dismissed ? update : null));
-ipcMain.handle('update:dismiss', () => { if (update) update.dismissed = true; });
+handleReader('update:state', () => (update && !update.dismissed ? update : null));
+handleReader('update:dismiss', () => { if (update) update.dismissed = true; });
 function setupUpdates() {
   let updater;
   try { ({ autoUpdater: updater } = require('electron-updater')); } catch { updater = null; }
   if (!app.isPackaged || !updater) {
-    ipcMain.handle('update:check', () => ({ kind: 'dev' }));
+    handleReader('update:check', () => ({ kind: 'dev' }));
     menu(async () => ({ kind: 'dev' }));
     return;
   }
@@ -363,9 +382,9 @@ function setupUpdates() {
       return { kind: 'check-failed' };
     }
   };
-  ipcMain.handle('update:check', byHand);
+  handleReader('update:check', byHand);
   menu(byHand);
-  ipcMain.handle('update:download', () => {
+  handleReader('update:download', () => {
     if (!update || !['available', 'failed'].includes(update.kind)) return;
     tell({ kind: 'downloading', version: update.version, percent: 0 });
     updater.downloadUpdate().catch(() => {
@@ -373,7 +392,7 @@ function setupUpdates() {
       tell({ kind: 'failed', version: update.version });
     });
   });
-  ipcMain.handle('update:install', async () => {
+  handleReader('update:install', async () => {
     if (!update || update.kind !== 'ready') return;
     await stopServer();   // (Windows: the installer replaces the bundled Python, which must not be running)
     updater.quitAndInstall(true, true);   // on Windows silently, and the new version opens

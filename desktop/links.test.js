@@ -1,9 +1,18 @@
 // links.js, without Electron: `npm test` here, or `node --test links.test.js` (tests/test_desktop_links.py runs it too)
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parse, readerUrl, fromArgv, validId } = require('./links');
+const { parse, readerUrl, fromArgv, validId, isReaderPage } = require('./links');
 
 const BASE = 'http://127.0.0.1:31917';
+
+test('native desktop actions belong to the app, notebook, and reader on the active server', () => {
+  for (const path of ['/', '/?start=2512.23916', '/notes', '/p/2512.23916?lang=en#level=full']) {
+    assert.equal(isReaderPage(BASE + path, BASE), true);
+  }
+  for (const address of ['http://127.0.0.1:3017/', 'file:///tmp/example.html', BASE + '/api/langs', BASE + '/p/2512.23916/img/chart.svg']) {
+    assert.equal(isReaderPage(address, BASE), false);
+  }
+});
 
 test('a link opens its paper, at its paragraph and level, in its language', () => {
   const parts = parse('textfold://open?paper=2512.23916&u=S3.p2&level=key&lang=zh-Hant');

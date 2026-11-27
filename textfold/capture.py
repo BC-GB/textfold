@@ -21,6 +21,7 @@ says which TextFold answers, for the extension to tell the reader what to do whe
                                                                                  extension and those named
   python3 -m textfold capture-host                                               what the browser starts
 """
+import http.client
 import json
 import os
 import re
@@ -29,7 +30,6 @@ import struct
 import sys
 import time
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 from . import local, store, webpage
@@ -87,7 +87,10 @@ def _server_url():
     except (OSError, ValueError):
         return None
     pid = s.get("pid") if isinstance(s, dict) else None
-    if not isinstance(pid, int) or not isinstance(s.get("url"), str):
+    if not isinstance(pid, int) or pid <= 0 or not isinstance(s.get("url"), str):
+        return None
+    match = re.fullmatch(r"http://127\.0\.0\.1:([0-9]{1,5})", s["url"])
+    if not match or not 1 <= int(match[1]) <= 65535:
         return None
     from .storage_settings import _process_alive
     if not _process_alive(pid):
@@ -101,12 +104,18 @@ def _generate(there, pid):
     from . import langs, models
     lang = models.load_settings().get("lang")
     body = json.dumps({"paper": pid, "lang": lang if lang in langs.LANGS else None}).encode("utf-8")
-    req = urllib.request.Request(f"{there}/api/generate", data=body, headers={"Content-Type": "application/json"})
-    try:   # (straight to this computer, whatever proxy the system names)
-        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=10) as r:
-            return json.loads(r.read() or b"{}").get("id")
-    except (OSError, ValueError):
+    # Always use loopback directly. A generation job has no redirects or proxy.
+    conn = http.client.HTTPConnection("127.0.0.1", urllib.parse.urlsplit(there).port, timeout=10)
+    try:
+        conn.request("POST", "/api/generate", body, {"Content-Type": "application/json"})
+        with conn.getresponse() as response:
+            if response.status != 200:
+                return None
+            return json.loads(response.read() or b"{}").get("id")
+    except (OSError, ValueError, http.client.HTTPException):
         return None
+    finally:
+        conn.close()
 
 
 def hello():
@@ -180,8 +189,8 @@ def receive(msg):
         meta["snapshot_kind"] = "browser"
         meta["snapshot_taken"] = msg.get("taken") if isinstance(msg.get("taken"), str) else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         meta["reader"] = how
-        pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', read))
-        local.store_doc(pid, read, meta, "snapshot.html", html, lambda folder: local.Images(folder, None, pre=pre).resolve, sizes=True)
+        resolver = webpage.image_resolver(read, webpage.PageRequests(url))
+        local.store_doc(pid, read, meta, "snapshot.html", html, resolver, sizes=True)
         if view:
             (d / "article.html").write_text(view, encoding="utf-8")   # (as the reading view gave it)
         else:

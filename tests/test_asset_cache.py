@@ -1,6 +1,7 @@
 """Shared assets can be reused between documents, but never under a stale content version."""
 import hashlib
 import http.client
+import json
 import re
 import shutil
 import tempfile
@@ -9,6 +10,8 @@ import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+
+from bs4 import BeautifulSoup
 
 from textfold import build, local, server, store
 
@@ -117,6 +120,18 @@ class AssetCache(unittest.TestCase):
         status, headers, _ = self.get(self.url("app.js"), host="attacker.example")
         self.assertEqual(status, 421)
         self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_document_words_do_not_become_template_fields(self):
+        doc = store.assemble(self.pid)
+        title = "Using {{HEAD}} and {{DATA}} in <example> templates"
+        doc["meta"]["title"] = title
+        for app in (True, False):
+            with self.subTest(app=app), mock.patch.object(build, "fonts_head", return_value=""):
+                soup = BeautifulSoup(build.page(doc, app=app), "lxml")
+                self.assertEqual(soup.title.string, title)
+                data = soup.find("script", id="paper-data").string
+                self.assertNotIn("<", data)
+                self.assertEqual(json.loads(data)["meta"]["title"], title)
 
     def test_vendor_policy_and_standalone_export_are_unchanged(self):
         folder = build.WEB / "vendor" / "fonts"

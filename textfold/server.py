@@ -115,11 +115,13 @@ import traceback
 import urllib.parse
 import urllib.request
 import uuid
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import __version__, adapt, agents, bridges, build, corrections, engine, fetch, fold, ids, langs, library, llm, local, models, news, notes, office, pdf, pdfdoc, pdffigs, pdftext, pipeline, providers, record, store, zotero
+from . import webpage
+from . import __version__, adapt, agents, bridges, build, corrections, engine, fetch, fold, ids, langs, library, llm, llm_openai, local, models, news, notes, office, pdf, pdfdoc, pdffigs, pdftext, pipeline, providers, record, store, zotero
 
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "reader.js": "text/javascript",
           "reader.css": "text/css", "i18n.js": "text/javascript", "tutorial.js": "text/javascript", "webmcp.js": "text/javascript",
@@ -186,21 +188,14 @@ def models_payload():
     with DISCOVERY_LOCK:
         discovery = dict(DISCOVERY)
     cat, provs = models.catalog(s, discovery["live"])
-    # While the agents are still being looked for, or the local services not yet asked, a saved choice missing from the
-    # list is not known to be gone: it shows as saved, and the reader's choice is not switched under them. Once both are
-    # known, one that is gone gives way as a generation's does (models.default_model), so the page names the model the
-    # next generation uses.
-    if agents.STATE["scanning"] or not agents.STATE["scanned_at"] or not discovery["ready"]:
-        for mid in (s.get("model"), s.get("ask_model")):
-            if mid and not any(m["id"] == mid for m in cat):
-                cat.append({"id": mid, "name": mid, "kind": "api", "group": "saved", "efforts": []})
     selected = models.default_model(s, cat)
     ask, ask_effort = models.ask_choice(s, cat)
     name = lambda mid: next((m["name"] for m in cat if m["id"] == mid), mid)
     return {
         "models": cat, "selected": selected, "selectedName": name(selected),
         "askModel": ask, "askEffort": ask_effort, "askName": name(ask) if ask and ask != selected else "",
-        "efforts": s.get("efforts") or {}, "bridge": discovery["bridge"],
+        "savedModel": s.get("model"), "savedAskModel": s.get("ask_model"),
+        "efforts": s.get("efforts") or {}, "bridge": discovery["bridge"], "bridgePackage": bridges.BRIDGE_PACKAGE,
         "discovery": {k: discovery[k] for k in ("refreshing", "ready", "error")},
         "agents": [{k: a[k] for k in ("runtime", "label", "binary", "path", "version", "runnable", "error")} | {"models": len(a["models"])}
                    for a in agents.STATE["agents"]],
@@ -394,9 +389,9 @@ class Jobs:
                         continue
                     except Exception:   # arXiv's PDF out of reach too: the app's own sentence for no HTML
                         pass
-                if str(e) == "web-pdf" and not stop.is_set():
+                if isinstance(e, webpage.WebPDF) and not stop.is_set():
                     try:
-                        self._pdf_link(job)   # a link to a PDF: the file, as if it had been dropped on the landing
+                        self._pdf_link(job, e.url, e.requests)   # a link to a PDF: the file, as if it had been dropped on the landing
                         continue
                     except Exception as e2:
                         e = e2
@@ -405,9 +400,8 @@ class Jobs:
             job["finished"] = time.time()
             PAGES.pop(job["pid"], None)
 
-    def _pdf_link(self, job, url=None):
-        url = url or store.read_text(store.pdir(job["pid"]) / "url.txt").strip()
-        data = fetch.urlread(urllib.request.Request(url, headers=fetch.UA), 90, pdf.LIMIT + 1)[0]
+    def _pdf_link(self, job, url, requests=fetch.PUBLIC):
+        data = fetch.urlread(urllib.request.Request(url, headers=fetch.UA), 90, pdf.LIMIT + 1, open_url=requests.open)[0]
         if data[:5] != b"%PDF-" or len(data) > pdf.LIMIT:
             raise ValueError("not-pdf")
         shutil.rmtree(store.pdir(job["pid"]), ignore_errors=True)   # (only its address was there)
@@ -643,6 +637,29 @@ def addressed_here(host):
     return bool(m) and m.group(1) in LOCAL_NAMES
 
 
+def provider_secret(body, base, previous):
+    """A saved credential belongs to the origin where the user entered it."""
+    if body.get("minted"):
+        if not llm_openai.same_origin(base, bridges.AUTH_URL):
+            raise ValueError("An OpenRouter authorization can only be used with OpenRouter.")
+        secret = bridges.minted()
+        if not secret:
+            raise ValueError("OpenRouter authorization has expired. Connect again.")
+        return secret
+    if body.get("api_key"):
+        return body["api_key"]
+    if previous.get("api_key") and llm_openai.same_origin(base, previous.get("base")):
+        return previous["api_key"]
+    return ""
+
+
+def oauth_return_path(back):
+    """The reader supplies its own pathname and query to reopen after consent."""
+    if not back.startswith("/") or back.startswith("//") or "\\" in back or re.search(r"[\x00-\x20\x7f]", back):
+        return "/"
+    return back
+
+
 def make_handler(jobs):
     class Handler(BaseHTTPRequestHandler):
         def send(self, code, body, ctype="application/json; charset=utf-8", cache="no-store"):
@@ -651,6 +668,10 @@ def make_handler(jobs):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", cache)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if ctype.startswith("text/html"):
+                self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+                self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             try:
                 self.wfile.write(data)
@@ -679,19 +700,21 @@ def make_handler(jobs):
                     code = (parse_qs(u.query).get("code") or [""])[0]
                     desktop = bridges.for_desktop()
                     key, err, back = bridges.openrouter_finish(code)
-                    back = back if back.startswith("/") else "/"
+                    back = oauth_return_path(back)
                     to = f"{back}#or-minted" if key else f"{back}#or-failed={quote(err or '')}"
                     if desktop:   # this tab is the system browser's: the app, waiting for the key, takes it from here
                         page = (f'<!doctype html><meta charset="utf-8"><title>TextFold</title><body style="font-family:system-ui;'
                                 f'display:grid;place-items:center;height:100vh;margin:0;background:#FAF9F7;color:#1f1d1a">'
                                 f'<div style="text-align:center;line-height:1.7"><h2>{"✓" if key else "✕"} OpenRouter</h2>'
-                                f'<p style="color:#6b6558">{"回到 TextFold 即可，本页可以关闭。<br>Return to TextFold; this tab can be closed." if key else (err or "")}</p></div>')
+                                f'<p style="color:#6b6558">{"回到 TextFold 即可，本页可以关闭。<br>Return to TextFold; this tab can be closed." if key else escape(err or "")}</p></div>')
                         return self.send(200, page, "text/html; charset=utf-8")
-                    page = (f'<!doctype html><meta charset="utf-8"><title>TextFold</title><body style="font-family:system-ui;'
-                            f'display:grid;place-items:center;height:100vh;margin:0;background:#FAF9F7;color:#1f1d1a">'
-                            f'<div style="text-align:center"><h2>{"✓ OpenRouter" if key else "OpenRouter ✕"}</h2></div>'
-                            f'<script>location.replace({json.dumps(to)})</script>')
-                    return self.send(200, page, "text/html; charset=utf-8")
+                    self.send_response(303)
+                    self.send_header("Location", quote(to, safe="/?#%&=+:;,@!$'()*~-._"))
+                    self.send_header("Referrer-Policy", "no-referrer")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 m = re.fullmatch(r"/p/([\w.-]+)/img/([\w.-]+)", u.path)   # a paper's picture (a drawing stays inside its page)
                 if m and store.valid_id(m.group(1)):
                     f = store.pdir(m.group(1)) / "img" / m.group(2)
@@ -824,10 +847,17 @@ def make_handler(jobs):
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
             origin = self.headers.get("Origin")
-            if origin and urlparse(origin).hostname not in ("localhost", "127.0.0.1"):
+            if self.headers.get("Sec-Fetch-Site") == "cross-site" or (
+                origin and not llm_openai.same_origin(origin, "http://" + self.headers["Host"])
+            ):
                 return self.json({"error": "forbidden"}, 403)  # another site may not drive this server
             try:
-                size = int(self.headers.get("Content-Length") or 0)
+                try:
+                    size = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    return self.json({"error": "invalid content length"}, 400)
+                if size < 0:
+                    return self.json({"error": "invalid content length"}, 400)
                 m = re.fullmatch(r"/api/pdf/([\w.-]+)", u.path)
                 if m:   # a paper's PDF, dropped on the reader's pane: the file's bytes, not JSON
                     if not (store.valid_id(m.group(1)) and (store.pdir(m.group(1)) / "meta.json").exists()):
@@ -1102,18 +1132,27 @@ def make_handler(jobs):
                         return self.json({"error": str(e)}, 400)
                     except Exception as e:  # the model failed: the note keeps its question, the reader can ask again
                         return self.json({"error": str(e)[:600]}, 502)
-                if u.path == "/api/models/select" and body.get("task") == "ask":
-                    s["ask_model"] = body.get("model") or None
-                    s["ask_effort"] = body.get("effort") or None
-                    models.save_settings(s)
-                    return self.json(models_payload())
                 if u.path == "/api/models/select":
-                    s["model"] = body.get("model") or None
-                    if "effort" in body and s["model"]:
+                    field = "ask_model" if body.get("task") == "ask" else "model"
+                    chosen = body.get("model") or None
+                    target = None
+                    if chosen:
+                        with DISCOVERY_LOCK:
+                            live = DISCOVERY["live"]
+                        catalog, _ = models.catalog(s, live)
+                        row = next((m for m in catalog if m["id"] == chosen), None)
+                        if row is None or row["target"] != body.get("target"):
+                            return self.json({"error": "Model or provider changed. Refresh Settings and choose it again."}, 409)
+                        target = row["target"]
+                    s[field] = chosen
+                    s[f"{field}_target"] = target
+                    if field == "ask_model":
+                        s["ask_effort"] = body.get("effort") or None
+                    elif "effort" in body and chosen:
                         if body["effort"]:
-                            s["efforts"][s["model"]] = body["effort"]
+                            s["efforts"][chosen] = body["effort"]
                         else:
-                            s["efforts"].pop(s["model"], None)
+                            s["efforts"].pop(chosen, None)
                     models.save_settings(s)
                     return self.json(models_payload())
                 if u.path == "/api/models/refresh":
@@ -1158,8 +1197,11 @@ def make_handler(jobs):
                     models.save_settings(s)
                     return self.json(models_payload())
                 if u.path == "/api/providers/probe":
-                    key = (bridges.minted() if body.get("minted") else None) or body.get("api_key") or \
-                        next((p.get("api_key") for p in s["providers"] if p["key"] == body.get("key")), "")
+                    previous = next((p for p in s["providers"] if p["key"] == body.get("key")), {})
+                    try:
+                        key = provider_secret(body, body.get("base", ""), previous)
+                    except ValueError as e:
+                        return self.json({"error": str(e)}, 400)
                     preset = next((p for p in providers.PRESETS + [models.ANTHROPIC_PRESET] if p["id"] == body.get("preset")), None)
                     if preset and preset.get("fixed"):  # MiniMax and Anthropic have no /models a key can list
                         found = [{"id": i} for i in preset["fixed"]]
@@ -1182,13 +1224,19 @@ def make_handler(jobs):
                         providers.name_of((body.get("base") or "").strip())
                     key = body.get("key") or re.sub(r"[^a-z0-9]+", "-", f"{preset}-{name}".lower()).strip("-")
                     old = next((p for p in s["providers"] if p["key"] == key), {})
-                    row = {"key": key, "preset": preset, "name": name, "base": (body.get("base") or "").strip().rstrip("/"),
-                           "api_key": (bridges.take_minted() if body.get("minted") else None) or body.get("api_key") or old.get("api_key", ""),
+                    base = (body.get("base") or "").strip().rstrip("/")
+                    try:
+                        secret = provider_secret(body, base, old)
+                    except ValueError as e:
+                        return self.json({"error": str(e)}, 400)
+                    row = {"key": key, "preset": preset, "name": name, "base": base, "api_key": secret,
                            "models": [{"id": i} for i in (body.get("models") or [])][:providers.MAX_MODELS]}
                     if preset == "anthropic":
                         row["protocol"] = "anthropic"
                     s["providers"] = ([p for p in s["providers"] if p["key"] != key] + [row])[-providers.MAX_PROVIDERS:]
                     models.save_settings(s)
+                    if body.get("minted"):
+                        bridges.clear_minted(secret)
                     return self.json(models_payload())
                 if u.path == "/api/providers/remove":
                     s["providers"] = [p for p in s["providers"] if p["key"] != body.get("key")]
@@ -1263,13 +1311,14 @@ def withdraw(f):
         pass
 
 
-def serve(port=3017):
+def serve(port=3017, *, scan_agents=True, open_browser=False):
     if os.name == "nt":
         _quiet_children()
     store.initialize_storage(log=lambda line: print(line, flush=True))   # (a library moved in Settings: copied now, once)
     jobs = Jobs()
     # look for the agents on this computer while the server comes up, and erase what was deleted 30 days ago
-    threading.Thread(target=agents.scan, kwargs={"log": print}, daemon=True).start()
+    if scan_agents:
+        threading.Thread(target=agents.scan, kwargs={"log": print}, daemon=True).start()
     threading.Thread(target=store.empty_trash, daemon=True).start()
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(jobs))
     port = httpd.server_address[1]   # (the one given, or the free one the system chose for 0)
@@ -1285,6 +1334,9 @@ def serve(port=3017):
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, killed)
         print(f"TextFold on http://localhost:{port}")
+        if open_browser:
+            import webbrowser
+            threading.Thread(target=webbrowser.open, args=(f"http://127.0.0.1:{port}",), daemon=True).start()
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass

@@ -815,13 +815,13 @@ def stored(pid):
     return got
 
 
-def snapshot(url, path=None, rendered=False):
+def snapshot(url, path=None, rendered=False, requests=None):
     """The page: fetched as TextFold fetches it (no scripts run), or a file saved before, as fetched or as a browser
     rendered it. (text, its address, how it was had)."""
     if path:
         from pathlib import Path
         return Path(path).read_text(encoding="utf-8", errors="replace"), url, "rendered" if rendered else "saved"
-    data, final, charset = webpage._get(url)
+    data, final, charset = webpage._get(url, requests)
     return data.decode(charset or "utf-8", "replace"), final, "fetched"
 
 

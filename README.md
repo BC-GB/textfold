@@ -114,7 +114,9 @@ The button reads a page only when you click it, and hands it to TextFold on this
 
 ## Get started
 
-**[Download the app](https://chenxiachan.github.io/textfold/#download)** for macOS (Apple silicon or Intel) or Windows. Everything it needs is inside, Python included.
+Use the source instructions below to run this fork. The upstream project offers a packaged app and a Python release.
+
+**[Download the upstream app](https://chenxiachan.github.io/textfold/#download)** for macOS (Apple silicon or Intel) or Windows. Everything it needs is inside, Python included.
 
 Or install the Python package, on any system and for your own pipeline:
 
@@ -123,12 +125,12 @@ python3 -m pip install textfold
 python3 -m textfold serve
 ```
 
-Open `http://localhost:3017`. The first time, [connect a model](#connect-a-model); then paste a link or drop a file, and pick a language. You need Python 3.9 or newer (the one macOS ships with works).
+Open `http://localhost:3017` and paste a link or drop a file. To generate levels, translate, or ask questions, [connect and select a model](#connect-a-model). You need Python 3.9 or newer.
 
 | Paste or drop | What TextFold reads |
 |---|---|
 | A paper's link or DOI: arXiv, PubMed Central, bioRxiv, medRxiv | its text as the site structures it (an arXiv paper without an HTML version is read from its PDF; another DOI needs an open full text in Europe PMC) |
-| Any other web page | its article, without the menus, the adverts, or the text it hides from its readers; an interactive figure that is a page of its own (as many research blogs embed them) runs in its place, and a formula written for MathJax or KaTeX is drawn as written |
+| Any other web page | its article, without menus, ads, or hidden text. A live figure loads when you choose its source. Formulas written for MathJax or KaTeX render as written. |
 | A page open in your browser | the page as you see it, signed in or subscribed, with what its scripts drew: click TextFold's button. [Works in your browser ↑](#works-in-your-browser) |
 | A Wikipedia article, a GitHub repository | the article; the README, with its pictures |
 | A PDF | the paper online when the PDF names one, with your file beside it; any other PDF, on your computer: read by TextFold itself, figures included, or more completely by the PDF engine (MinerU, about 3.4 GB, installed once from the landing), which a scanned PDF needs |
@@ -140,10 +142,10 @@ Open `http://localhost:3017`. The first time, [connect a model](#connect-a-model
 What you read is kept in your system's folder for app data, shared with the desktop app.
 
 <details>
-<summary>Run it from the code instead</summary>
+<summary>Run this fork from source</summary>
 
 ```bash
-git clone https://github.com/chenxiachan/textfold.git
+git clone https://github.com/BC-GB/textfold.git
 cd textfold
 python3 -m pip install -r requirements.txt
 python3 -m textfold serve
@@ -155,13 +157,14 @@ What you read is then kept in the clone.
 
 ## Connect a model
 
-TextFold uses a model you already have, and there is no account to create. It looks for one when it starts; if it finds none, the first page offers the ways in.
+TextFold can use a model you already have. Select a model and provider in **Settings › Models** before using AI features. If the saved destination changes or becomes unavailable, choose the model again. For older settings, reselect the model once to confirm its destination.
 
 | You have | What to do |
 |---|---|
-| Claude Code, Codex, Pi, WorkBuddy or Antigravity | Nothing. TextFold finds it and uses it. WorkBuddy (experimental) brings its models, on your WorkBuddy sign-in; CodeBuddy's own CLI works too. Antigravity's CLI, agy (experimental), runs on your Google sign-in. |
-| A ChatGPT plan | Click **Use my ChatGPT plan**. A small bridge starts on your computer and signs in with your account (needs Node.js). |
-| Nothing yet | Click **OpenRouter in one click**. Authorize once, and free models are ready. |
+| Claude Code, Codex, Pi, WorkBuddy or Antigravity | Select a model listed under that agent. Use **Rescan** if you just installed or connected it. WorkBuddy and Antigravity are experimental. |
+| ChatGPT account with Codex access | Run `codex login` in the official Codex CLI and complete sign-in in your browser. In TextFold, open **Settings**, choose **Rescan**, and select a **Codex** model. The CLI manages your login and sends TextFold's model prompts to OpenAI. [Codex authentication](https://learn.chatgpt.com/docs/auth#codex-cli) |
+| ChatGPT via the optional Node.js bridge | **Use my ChatGPT plan** runs the third-party `openai-oauth` helper. The helper can use your saved Codex login or open a browser sign-in. |
+| Nothing yet | Click **OpenRouter in one click**, authorize, and select a model. |
 | An API key | **Settings › Add provider**: Anthropic, OpenAI, DeepSeek, Qwen, Zhipu GLM, Kimi, MiniMax, Google, Ollama, or any OpenAI-compatible endpoint. |
 
 Your questions can go to a stronger model than the one that writes the levels: **Settings › Models › Answering questions**, with how hard it reasons.

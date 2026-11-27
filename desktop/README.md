@@ -50,6 +50,11 @@ installs `requirements.txt` into it and copies `textfold/` (the reader's pages i
 `desktop/payload/`. Build outside a synced folder (Dropbox, iCloud Drive), or have it skip `desktop/node_modules`,
 `desktop/payload` and `desktop/out` (several hundred MB).
 
+The build checks the CPython archive's SHA-256 before extraction. The release and hashes for all three targets
+are pinned in `scripts/python-archive.mjs`. To refresh them, check the new Astral release's `SHA256SUMS` and
+update the pins in the same change. A custom HTTPS archive requires both `PBS_URL` and an independently
+verified `PBS_SHA256`. Its interpreter must meet the pinned minimum patch version in the same Python series.
+
 Before it ships, that Python runs TextFold's tests, reads a Markdown, an HTML and a CSV file without a model, and
 serves the reader with them listed:
 

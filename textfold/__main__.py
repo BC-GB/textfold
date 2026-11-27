@@ -120,9 +120,9 @@ def engine_cmd(args):
 def adapt_cmd(a):
     """A web page and a recipe for its site (adapt.py): with no recipe, what an agent is given to write one; with one,
     the page read with it and checked; --keep stores it so read, its snapshot beside it."""
-    import re
     from . import adapt, store, webpage
-    page, final, how = adapt.snapshot(a.url, a.snapshot, a.rendered)
+    requests = webpage.PageRequests(a.url)
+    page, final, how = adapt.snapshot(a.url, a.snapshot, a.rendered, requests)
     if not a.recipe:
         print(adapt.brief(a.url, page, final, how))
         return 0
@@ -139,10 +139,11 @@ def adapt_cmd(a):
             print(f"{pid} is in the library already: delete it first")
             return 2
         store.pdir(pid).mkdir(parents=True, exist_ok=True)
+        (store.pdir(pid) / "url.txt").write_text(a.url, encoding="utf-8")
         info = webpage.about(webpage.visible(page, final), final)
         meta = {**webpage.meta_of(pid, final, info), "recipe": recipe, "snapshot_kind": how}
-        pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html))
-        local.store_doc(pid, html, meta, "snapshot.html", page, lambda folder: local.Images(folder, None, pre=pre).resolve, sizes=True)
+        resolver = webpage.image_resolver(html, requests)
+        local.store_doc(pid, html, meta, "snapshot.html", page, resolver, sizes=True)
         print(f"kept: {pid}")
     return 0
 

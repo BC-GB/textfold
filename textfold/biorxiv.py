@@ -20,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .web_requests import PUBLIC
 from . import epmc, jats, local, store
 from .fetch import AGAIN, UA, urlread
 
@@ -53,7 +54,7 @@ def _get(url, timeout=60):
             time.sleep(max(0.0, _pace["last"] + DELAY - time.time()))
             _pace["last"] = time.time()
     again = tuple(max(w, DELAY) for w in AGAIN) if paced else AGAIN   # (a try again keeps to their pace too)
-    data, final, _ = urlread(urllib.request.Request(url, headers=UA), timeout, again=again)
+    data, final, _ = urlread(urllib.request.Request(url, headers=UA), timeout, again=again, open_url=PUBLIC.open)
     return data, final
 
 

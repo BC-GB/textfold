@@ -1851,18 +1851,28 @@
   function embeds(fb) {
     for (const a of fb.querySelectorAll('a.pf-embed')) {
       if (!framable(a.href)) continue;
-      const box = h('div', 'embed'), fr = document.createElement('iframe');
-      fr.src = a.href;
-      fr.title = a.title || a.textContent.trim();
-      fr.loading = 'lazy';
-      fr.referrerPolicy = 'no-referrer';
-      fr.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms');
-      fr.setAttribute('allow', 'fullscreen');
-      fr.style.height = `${Math.max(160, Math.min(1400, +((a.className.match(/\bpf-h-(\d+)\b/) || [])[1] || 480)))}px`;
-      const bar = h('div', 'embed-bar');
-      bar.innerHTML = `<span>${esc(T[ui].embed_live)}</span><a href="${esc(a.href)}" target="_blank" rel="noopener">${esc(T[ui].embed_open)} ↗</a>`;
-      box.append(fr, bar);
+      const box = h('div', 'embed'), bar = h('div', 'embed-bar');
+      const load = h('button', 'embed-load'), separate = h('a'), source = new URL(a.href);
+      load.type = 'button';
+      load.textContent = [T[ui].embed_load, source.host].join(' · ');
+      separate.href = source.href;
+      separate.target = '_blank';
+      separate.rel = 'noopener noreferrer';
+      separate.textContent = T[ui].embed_open + ' ↗';
+      bar.append(load, separate);
+      box.append(bar);
       a.replaceWith(box);
+      load.addEventListener('click', () => {
+        const fr = document.createElement('iframe');
+        fr.title = a.title || a.textContent.trim();
+        fr.referrerPolicy = 'no-referrer';
+        fr.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms');
+        fr.setAttribute('allow', 'fullscreen');
+        fr.style.height = `${Math.max(160, Math.min(1400, +((a.className.match(/\bpf-h-(\d+)\b/) || [])[1] || 480)))}px`;
+        fr.src = source.href;
+        box.prepend(fr);
+        load.replaceWith(document.createTextNode(T[ui].embed_live));
+      }, { once: true });
     }
   }
 

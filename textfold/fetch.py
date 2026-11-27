@@ -13,6 +13,7 @@ import uuid
 from html import unescape
 from pathlib import Path
 
+from .web_requests import PUBLIC, DestinationDenied
 from . import __version__
 
 UA = {"User-Agent": f"TextFold/{__version__} (research prototype; github.com/chenxiachan/textfold)"}
@@ -53,7 +54,7 @@ def _later(e, wait):
         return wait
 
 
-def urlread(req, timeout=60, limit=None, check=None, busy=BUSY, again=AGAIN):
+def urlread(req, timeout=60, limit=None, check=None, busy=BUSY, again=AGAIN, open_url=None):
     """A request's body, its address after redirects, and its headers. A failure on the way (a connection dropped or
     reset, a TLS stream cut short, a timeout, no network) is tried again after `again`'s waits, and so is a busy
     server's answer (`busy`). An answer that will not change (404, 403, a certificate refused) is raised at once, as is
@@ -62,7 +63,7 @@ def urlread(req, timeout=60, limit=None, check=None, busy=BUSY, again=AGAIN):
         req = urllib.request.Request(req, headers=UA)
     for i in range(len(again) + 1):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with (open_url or urllib.request.urlopen)(req, timeout=timeout) as r:
                 if check:
                     check(r)
                 return (r.read() if limit is None else r.read(limit)), r.geturl(), r.headers
@@ -80,7 +81,7 @@ def urlread(req, timeout=60, limit=None, check=None, busy=BUSY, again=AGAIN):
 
 
 def get(url):
-    data, final, _ = urlread(url)
+    data, final, _ = urlread(url, open_url=PUBLIC.open)
     return data, final
 
 
@@ -131,9 +132,18 @@ def fetch_images(srcs, base_url, out_dir: Path):
 
     def one(s):
         name = image_name(s)
-        f = next((g for g in (out_dir / name, out_dir / (name + ".webp")) if g.exists()), None)
+        if not name or name in (".", ".."):
+            return s, None
+        f = next((g for g in (out_dir / name, out_dir / (name + ".webp")) if not g.is_symlink() and g.is_file()), None)
         if f is None:
-            data, kept = picture.compact(get(urllib.parse.urljoin(base_url, s))[0], name)
+            url = urllib.parse.urljoin(base_url, s)
+            target = urllib.parse.urlsplit(url)
+            if target.scheme not in ("http", "https") or not target.hostname:
+                return s, None
+            try:
+                data, kept = picture.compact(get(url)[0], name)
+            except DestinationDenied:
+                return s, None
             f = out_dir / kept
             tmp = f.with_name(f"{f.name}.{uuid.uuid4().hex[:8]}.part")   # (a page built meanwhile never finds half a picture)
             tmp.write_bytes(data)
@@ -141,5 +151,5 @@ def fetch_images(srcs, base_url, out_dir: Path):
         return s, f"{out_dir.name}/{f.name}"
 
     with ThreadPoolExecutor(4) as ex:
-        return dict(ex.map(one, srcs))
+        return {src: path for src, path in ex.map(one, srcs) if path}
 

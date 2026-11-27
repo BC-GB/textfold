@@ -628,6 +628,12 @@ window.DR_I18N = (() => {
       ['स्वचालित', 'बंद', 'न्यूनतम', 'कम', 'मध्यम', 'ऊँचा', 'बहुत ऊँचा', 'अधिकतम', 'अल्ट्रा']]),
   };
   for (const [code, words] of Object.entries(M)) Object.assign(S[code], words);
+  const modelChoice = {
+    en: "Choose a model", zh: "选择模型", "zh-Hant": "選擇模型", ja: "モデルを選択", ko: "모델 선택",
+    es: "Elegir un modelo", fr: "Choisir un modèle", de: "Modell auswählen", pt: "Escolher um modelo",
+    it: "Scegli un modello", ru: "Выбрать модель", hi: "मॉडल चुनें",
+  };
+  for (const [code, words] of Object.entries(modelChoice)) S[code].st_choose_model = words;
   // several files at once (app.js, addFiles): the upload under way, what came of them, why one was not taken
   const fls = (w) => ({ fl_adding: w[0], fl_added: w[1], fl_queue: w[2], fl_engine: w[3], fl_skipped: w[4], fl_no_model: w[5], fl_read: w[6] });
   const FL = {
@@ -875,18 +881,18 @@ window.DR_I18N = (() => {
   for (const [code, words] of Object.entries(TRFIX)) Object.assign(S[code], words);
   // an interactive figure of a web page, in its frame (reader.js, embeds): what it is, and its own page
   const EMBEDS = {
-    en: { embed_live: "Interactive, from its page", embed_open: "Open it on its own" },
-    zh: { embed_live: "交互图，来自原网页", embed_open: "单独打开" },
-    "zh-Hant": { embed_live: "互動圖，來自原網頁", embed_open: "單獨開啟" },
-    ja: { embed_live: "インタラクティブな図（元のページから）", embed_open: "単独で開く" },
-    ko: { embed_live: "인터랙티브 그림, 원래 페이지에서", embed_open: "따로 열기" },
-    es: { embed_live: "Interactiva, de su página", embed_open: "Abrirla aparte" },
-    fr: { embed_live: "Interactive, depuis sa page", embed_open: "L’ouvrir seule" },
-    de: { embed_live: "Interaktiv, von ihrer Seite", embed_open: "Für sich öffnen" },
-    pt: { embed_live: "Interativa, da sua página", embed_open: "Abrir à parte" },
-    it: { embed_live: "Interattiva, dalla sua pagina", embed_open: "Aprila da sola" },
-    ru: { embed_live: "Интерактивная, со своей страницы", embed_open: "Открыть отдельно" },
-    hi: { embed_live: "इंटरैक्टिव, अपने पेज से", embed_open: "अलग से खोलें" },
+    en: { embed_load: "Load interactive figure", embed_live: "Interactive, from its page", embed_open: "Open it on its own" },
+    zh: { embed_load: "加载交互图", embed_live: "交互图，来自原网页", embed_open: "单独打开" },
+    "zh-Hant": { embed_load: "載入互動圖", embed_live: "互動圖，來自原網頁", embed_open: "單獨開啟" },
+    ja: { embed_load: "インタラクティブ図を読み込む", embed_live: "インタラクティブな図（元のページから）", embed_open: "単独で開く" },
+    ko: { embed_load: "인터랙티브 그림 불러오기", embed_live: "인터랙티브 그림, 원래 페이지에서", embed_open: "따로 열기" },
+    es: { embed_load: "Cargar figura interactiva", embed_live: "Interactiva, de su página", embed_open: "Abrirla aparte" },
+    fr: { embed_load: "Charger la figure interactive", embed_live: "Interactive, depuis sa page", embed_open: "L’ouvrir seule" },
+    de: { embed_load: "Interaktive Abbildung laden", embed_live: "Interaktiv, von ihrer Seite", embed_open: "Für sich öffnen" },
+    pt: { embed_load: "Carregar figura interativa", embed_live: "Interativa, da sua página", embed_open: "Abrir à parte" },
+    it: { embed_load: "Carica figura interattiva", embed_live: "Interattiva, dalla sua pagina", embed_open: "Aprila da sola" },
+    ru: { embed_load: "Загрузить интерактивную иллюстрацию", embed_live: "Интерактивная, со своей страницы", embed_open: "Открыть отдельно" },
+    hi: { embed_load: "इंटरैक्टिव चित्र लोड करें", embed_live: "इंटरैक्टिव, अपने पेज से", embed_open: "अलग से खोलें" },
   };
   for (const [code, words] of Object.entries(EMBEDS)) Object.assign(S[code], words);
   // Settings' last section, TextFold in the reader's other tools (app.js, render: st-tools)

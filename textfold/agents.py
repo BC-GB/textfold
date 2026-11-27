@@ -246,7 +246,8 @@ def search_dirs():
     out, seen = [], set()
     for d in dirs + managers:
         d = os.path.expanduser(d)
-        if d and d not in seen and os.path.isdir(d):
+        # Automatic discovery and child processes must not select a binary from their current directory.
+        if os.path.isabs(d) and d not in seen and os.path.isdir(d):
             seen.add(d)
             out.append(d)
     return out

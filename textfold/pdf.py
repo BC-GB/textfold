@@ -10,6 +10,7 @@ import threading
 import urllib.error
 import urllib.request
 
+from .web_requests import PUBLIC, DestinationDenied
 from . import store
 from .fetch import UA, urlread
 
@@ -55,8 +56,8 @@ def path(pid):
             return f
         for url in candidates(pid, meta):
             try:
-                data = urlread(urllib.request.Request(url, headers=UA), 90, LIMIT + 1)[0]
-            except (urllib.error.URLError, OSError):
+                data = urlread(urllib.request.Request(url, headers=UA), 90, LIMIT + 1, open_url=PUBLIC.open)[0]
+            except (urllib.error.URLError, OSError, DestinationDenied):
                 continue
             if data[:5] == b"%PDF-" and len(data) <= LIMIT:
                 tmp = f.with_suffix(".part")

@@ -56,6 +56,38 @@ test('the frames are put in their places and the page is sent to TextFold', asyn
   assert.deepEqual(b.badges, ['…', '✓']);
 });
 
+test('the raw snapshot keeps article controls and omits private drafts and form state', () => {
+  const text = data => ({ nodeType: 3, data });
+  const element = (localName, attrs = {}, children = []) => ({
+    nodeType: 1, localName, type: attrs.type, childNodes: children,
+    isContentEditable: attrs.contenteditable === 'true',
+    attributes: Object.entries(attrs).map(([name, value]) => ({ name, value })),
+    hasAttribute: key => Object.hasOwn(attrs, key),
+    getAttribute: key => attrs[key] ?? null,
+  });
+  const document = {
+    documentElement: element('html'), title: 'Table', head: element('head', {}, [
+      element('meta', { name: 'csrf-token', content: 'private-meta' }),
+      element('meta', { property: 'og:title', content: 'Table of results' }),
+    ]),
+    body: element('body', {}, [
+      element('input', { type: 'hidden', value: 'private-hidden' }),
+      element('input', { type: 'text', value: 'private-field' }),
+      element('textarea', {}, [text('private-textarea')]),
+      element('div', { contenteditable: 'true' }, [text('private-editor')]),
+      element('button', { 'data-testid': 'result', 'data-token': 'private-token', value: 'private-id' }, [text('24%')]),
+      element('input', { type: 'button', value: 'Show result' }),
+    ]),
+  };
+  const result = vm.runInNewContext(fs.readFileSync(path.join(dir, 'snapshot.js'), 'utf8'), {
+    document, location: { href: 'https://example.org/table' }, getComputedStyle: () => ({}),
+  });
+  assert.doesNotMatch(result.html, /private-/);
+  assert.match(result.html, /data-testid="result">24%<\/button>/);
+  assert.match(result.html, /value="Show result"/);
+  assert.match(result.html, /content="Table of results"/);
+});
+
 test('the readings are made in the top frame, on the snapshot sent, and sent with it', async () => {
   const b = background();
   await b.capture({ id: 3, index: 0 });
@@ -135,6 +167,10 @@ test('kept, the button says where: in the library, and to open TextFold when it 
   await running.capture({ id: 3, index: 0 });
   assert.equal(running.titles.at(-1), 'already');
   assert.deepEqual(plain(running.tabs), [{ url: 'http://127.0.0.1:31917/p/web-a-example-1', index: 1 }]);
+  const other = background(false, () => ({ ok: true, paper: 'web-a-example-1', open: 'https://example.org/p/web-a-example-1' }));
+  await other.capture({ id: 3, index: 0 });
+  assert.deepEqual(other.tabs, []);
+  assert.equal(other.titles.at(-1), 'saved_closed');
   assert.equal(running.sent[0][1].version, 1);
 });
 
