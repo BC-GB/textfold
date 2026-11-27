@@ -20,6 +20,9 @@
     "electron": "^43.8.13",
     "electron-builder": "^26.15.3"
   },
+  "overrides": {
+    "minimatch@>=7.0.0 <11.0.1": "11.0.9"
+  },
   "build": {
     "appId": "io.github.chenxiachan.textfold",
     "productName": "TextFold",
