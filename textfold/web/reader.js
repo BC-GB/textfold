@@ -377,7 +377,7 @@
   function textHtml(uid, L) {
     const pcs = pieces(uid, L);
     let html = '', run = null, buf = '';
-    const flush = () => { if (buf) html += run ? `<span class="${run}">${buf}</span>` : buf; buf = ''; };
+    const flush = () => { if (buf) html += run ? `<span class="${esc(run)}">${buf}</span>` : buf; buf = ''; };
     pcs.forEach((p, n) => {
       const t = p.tok || {};
       const cls = p.gap ? 'tr gap' : `tr${p.lead ? ' lead' : ''}${p.kept ? ' kept' : ''}${t.f ? ' ' + t.f : ''}${hlCls(p)}${fdCls(p)}${p.rv !== undefined ? rvCls({ rv: p.rv }) : ''}`;

@@ -28,6 +28,7 @@ SECTION_LEVEL = {
     "ltx_subsubsection": 4, "ltx_paragraph": 5, "ltx_subparagraph": 5,
 }
 BLOCKISH = {"div", "table", "figure", "img", "ul", "ol", "svg", "object", "pre"}
+FONT_CLASS = re.compile(r"ltx_font_[A-Za-z0-9_-]+")
 
 
 def blockish(el):
@@ -125,7 +126,9 @@ def shown(el, strip=False):
 
 
 def font_of(el, inherited):
-    fonts = [c for c in el.get("class", []) if c.startswith("ltx_font_")]
+    # Font names cross from document HTML into token metadata and later become DOM classes. Keep only identifiers;
+    # punctuation in an entity-decoded class must not become attribute syntax when the token is drawn.
+    fonts = [c for c in el.get("class", []) if FONT_CLASS.fullmatch(c)]
     if el.name in ("em", "i") and not fonts:
         fonts = ["ltx_font_italic"]
     if el.name in ("strong", "b") and not fonts:

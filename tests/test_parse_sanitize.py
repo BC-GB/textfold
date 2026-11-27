@@ -13,6 +13,7 @@ import re
 import unittest
 
 from textfold.parse import parse
+from textfold.semantic import normalize
 
 # A minimal arXiv/LaTeXML-shaped page (article.ltx_document, ltx_section/ltx_title/ltx_p
 # classes the parser depends on) carrying independent injection vectors, the last group inside an SVG:
@@ -103,6 +104,21 @@ class ParseSanitizeTest(unittest.TestCase):
         self.assertNotIn("<style", blob.lower())
         self.assertIsNone(ON_ATTR.search(blob))
         self.assertNotIn("javascript:", blob.lower())
+
+
+class FontClassSanitizeTest(unittest.TestCase):
+    def tokens(self, classes):
+        page = normalize(f'<p><span class="{classes}">Styled words.</span></p>', sizes=True)
+        doc = parse(page, {"id": "md-font", "title": "Font classes", "unit_ids": "text"})
+        return next(iter(doc["units"].values()))["toks"]
+
+    def test_entity_decoded_quotes_do_not_become_font_metadata(self):
+        toks = self.tokens('ltx_font_italic&quot; data-test=&quot;embedded')
+        self.assertTrue(all("f" not in tok for tok in toks))
+
+    def test_valid_font_classes_are_preserved(self):
+        toks = self.tokens("ltx_font_italic ltx_font_bold")
+        self.assertEqual({tok.get("f") for tok in toks}, {"ltx_font_bold ltx_font_italic"})
 
 
 if __name__ == "__main__":
