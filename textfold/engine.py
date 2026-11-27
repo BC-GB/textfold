@@ -20,6 +20,7 @@ import zipfile
 from pathlib import Path
 
 from . import store
+from ._storage_layout import DirectoryFiles
 
 VERSION = "4.0.10"
 # the libraries MinerU VERSION allows to move on (docvortex<1) that have since changed what it calls: kept at a version
@@ -27,6 +28,8 @@ VERSION = "4.0.10"
 PINS = {"docvortex": "0.5.16"}
 TIERS = {"fast": "flash", "accurate": "advanced"}
 MARK = "installed.txt"   # written last: an engine folder without it is an install that did not finish
+INSTALLING = ".textfold-installing"
+_COMPONENTS = ("venv", "python", "mineru-home", "uv", ".uv-cache", MARK, INSTALLING)
 # the files it reads besides PDFs (MinerU's own list, mineru/filetypes.py), by their extension, with the name a reader
 # knows them by. A picture is read like a scanned page, in either tier; the others have one way to be read (the fast
 # tier: their text and structure are in the file, no model is needed)
@@ -57,7 +60,8 @@ def home():
     """Where a new engine goes unless the reader chooses a folder: beside the library, in the folder it was moved to
     (Settings), or else in the system's folder for app data (beside the library that stays there, or a clone's)."""
     root = store.library_root()
-    return root / "engine" if root != Path(store.DATA).resolve() else store.app_data() / "engine"
+    base = root if root != Path(store.DATA).resolve() else store.app_data()
+    return Path(base).resolve() / "engine"
 
 
 def target():
@@ -77,15 +81,16 @@ def _record(folder):
 
 def choose(folder):
     """The folder the reader chose for the engine (Settings, the command line): a full path, and empty or not there yet,
-    or the one chosen before (an install that did not finish), or an engine's own (its MARK). Removing the engine removes
-    its folder, so a folder with anything else in it is refused (in the codes of the library's folder: storage_settings)."""
-    from .storage_settings import Refused
-    path = Path(str(folder or "").strip()).expanduser()
-    if not path.is_absolute():
-        raise Refused("path", "Enter an absolute folder path")
-    path = path.resolve()
-    if path.exists() and path != target().resolve() and not (path / MARK).exists() and (not path.is_dir() or any(path.iterdir())):
-        raise Refused("not_empty", "Choose an empty folder: removing the engine removes its folder")
+    or an existing TextFold engine. Keep its files separate from unrelated contents."""
+    from .storage_settings import Refused, recorded_folder, selected_folder
+    path = recorded_folder(folder) if isinstance(folder, Path) else selected_folder(str(folder or ""))
+    if path.exists():
+        if not path.is_dir():
+            raise Refused("not_empty", "Choose an empty folder or an existing TextFold engine")
+        if not _owned(path):
+            same = path == target()
+            if any(not same or p.name not in _COMPONENTS for p in path.iterdir()):
+                raise Refused("not_empty", "Choose an empty folder or an existing TextFold engine")
     _record(path)
     return path
 
@@ -93,23 +98,48 @@ def choose(folder):
 def legacy():
     """Where PaperFold installed it (kept there: 3.4 GB is not moved)."""
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "PaperFold" / "engine"
-    if sys.platform == "win32":
-        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PaperFold" / "engine"
-    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "paperfold" / "engine"
+        base = Path.home() / "Library" / "Application Support" / "PaperFold"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PaperFold"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "paperfold"
+    return base.resolve() / "engine"
 
 
 def _bin(e, name):
     return e / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / (name + (".exe" if sys.platform == "win32" else ""))
 
 
+def _at_recorded_location(folder):
+    from .storage_settings import recorded_folder
+    try:
+        recorded_folder(folder)
+    except ValueError:
+        return False
+    return True
+
+
 def _ready(e):
-    return _bin(e, "mineru-kit").exists() and (e / "mineru-home" / "models").exists() and ((e / MARK).exists() or e == legacy())
+    if not _at_recorded_location(e):
+        return False
+    launcher = _bin(e, "mineru-kit")
+    mark = e / MARK
+    try:
+        return (launcher.resolve().is_relative_to(e) and launcher.is_file()
+                and (e / "mineru-home" / "models").exists()
+                and ((mark.is_file() and not mark.is_symlink()) or e == legacy()))
+    except (OSError, RuntimeError):
+        return False
+
+
+def _owned(e):
+    return _at_recorded_location(e) and (
+        any(p.is_file() and not p.is_symlink() for p in (e / MARK, e / INSTALLING)) or (e == legacy() and _ready(e)))
 
 
 def where():
     """The installed engine's folder, or None: the one recorded, or one installed before a folder was recorded."""
-    return next((e for e in (target(), store.app_data() / "engine", legacy()) if _ready(e)), None)
+    return next((e for e in (target(), store.app_data().resolve() / "engine", legacy()) if _ready(e)), None)
 
 
 def _env(e):
@@ -201,9 +231,16 @@ def _uv(e, log, stop):
 def install(progress=lambda *a: None, log=lambda *a: None, stop=None):
     """MinerU and its models into target(): about 20 minutes and 3.4 GB. An interrupted install starts again from the
     step it stopped at (each step is idempotent), in the same folder."""
-    e = target()
+    from .storage_settings import recorded_folder
+    e = recorded_folder(target())
+    files = DirectoryFiles(e)
+    for name in _COMPONENTS:
+        files.path(name)
     _record(e)
     e.mkdir(parents=True, exist_ok=True)
+    if not _owned(e) and any(p.name not in _COMPONENTS for p in e.iterdir()):
+        raise ValueError("Choose an empty folder or an existing TextFold engine")
+    files.write(INSTALLING, b"TextFold PDF engine\n")
     env = _env(e)
     steps = 4
     progress("engine-uv", 0, steps)
@@ -218,7 +255,8 @@ def install(progress=lambda *a: None, log=lambda *a: None, stop=None):
     _run([_bin(e, "mineru-kit"), "models", "download", "--tier", "standard"], env, log, stop)
     shutil.rmtree(e / ".uv-cache", ignore_errors=True)
     pins = "".join(f"{k}=={v}\n" for k, v in PINS.items())
-    (e / MARK).write_text(f"mineru=={VERSION}\n{pins}{time.strftime('%Y-%m-%d %H:%M:%S')}\n", encoding="utf-8")
+    files.write(MARK, f"mineru=={VERSION}\n{pins}{time.strftime('%Y-%m-%d %H:%M:%S')}\n".encode("utf-8"))
+    (e / INSTALLING).unlink(missing_ok=True)
     progress("engine-models", steps, steps)
     return status()
 
@@ -253,9 +291,16 @@ def _repin(e, log, stop):
 
 
 def uninstall():
-    e = where() or (target() if target().exists() else None)
-    if e:
-        shutil.rmtree(e)
+    e = where() or target()
+    if _owned(e):
+        for name in _COMPONENTS:
+            item = e / name
+            if item.is_symlink() or item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+        if e.is_dir() and not any(e.iterdir()):
+            e.rmdir()
     _record(None)   # (the next one goes beside the library again, or where the reader chooses)
     _size.clear()
     return status()

@@ -19,7 +19,7 @@ Serif text is the author's; sans text is a summary. At every level the words tha
 
 ```bash
 python3 -m pip install -r requirements.txt   # beautifulsoup4, lxml, Pillow
-python3 -m textfold serve                    # http://localhost:3017  (ThoughtDAG keeps 3001)
+python3 -m textfold serve                    # http://127.0.0.1:3017
 ```
 
 The same code is a Python package (`pyproject.toml`): `python3 -m pip wheel . --no-deps` builds it, with the reader's
@@ -27,6 +27,17 @@ pages (`textfold/web/`) inside, and `pip install textfold` gives the `textfold` 
 installs a user's packages with their commands in `~/Library/Python/3.9/bin`, which is not on the PATH, so `textfold`
 alone is not found there, and `python3 -m textfold` always is. Run from a clone, papers are
 kept in the clone; installed, in the system's folder for app data (`store.app_data()`, shared with the desktop app).
+
+The desktop opens its local reader automatically. For the standalone server, enter `textfold` as the browser username
+and obtain the current browser password with `python3 -m textfold local-access` in the same local profile. The command
+shows the password on the interactive console. Local HTTP clients use the separate automation key returned by
+`local_access.discover` as a bearer token. A custom agent requires approval through the desktop dialog or by entering
+its exact command into `python3 -m textfold approve-local-agent` before detecting it in Settings.
+On Windows, launch agents with a native executable or a supported npm shim so arguments are passed directly.
+
+A custom library or PDF engine folder needs confirmation in the desktop app whenever you select it. In a standalone
+browser, run `python3 -m textfold approve-local-folder` with `library-copy`, `library-existing`, or `engine-install`
+as indicated by Settings. Enter the same absolute path and submit the change in Settings within five minutes.
 
 The landing takes a link or ID (arXiv, PubMed Central, Europe PMC, bioRxiv, medRxiv, a DOI, Wikipedia), or a Markdown
 file (the dashed box under the bar, or dropped anywhere on the page), and a language; a line under the bar names
@@ -46,7 +57,7 @@ unclear.
 Where things are kept: the code in the project (`textfold/`, with the reader's pages in `textfold/web/`); papers and exports in `papers/` and `out/` of the
 project, or wherever `TEXTFOLD_DATA` points (`PAPERFOLD_DATA`, its earlier name, is read too); settings and keys in
 `~/.textfold/`. While a server runs, `server.json` in the data folder says where it is, for the programs that
-work with it (`server.announce`: format, version, url, port, pid, TextFold's version, when it started, in UTC); it is
+work with it. Python integrations can use `local_access.discover` to get the address and the locally protected credential. It is
 removed when the server stops (^C, or SIGTERM, the app's `server.kill()`), unless a server started since has written its own.
 
 The app (`desktop/`, see its README): an Electron window around the same server, with its own CPython
@@ -91,12 +102,13 @@ Models (⚙ Model & API), ported from ThoughtDAG's model access:
   TextFold's own, written into the scratch folder for the call (our system prompt, the `finish` tool alone, no MCP
   servers, rules or skills of the user's), with `--output-format stream-json`: the answer is the `finish` call's or the
   result's, and the call ends once it is in, since agy goes on with work of its own after it (`agents.run`'s `done`).
-- **Two easy ways in** (`textfold/bridges.py`, as in ThoughtDAG):
-  - **ChatGPT plan, local bridge**: openai-oauth (npm) serves the plan as an OpenAI-compatible endpoint on
+- **Saved model choices** include the selected provider endpoint or agent. A change of destination needs a fresh
+  selection. Codex models use the official CLI's login, managed by `codex login`.
+- **Optional bridges** (`textfold/bridges.py`, as in ThoughtDAG):
+  - **ChatGPT plan, local bridge**: the third-party openai-oauth package serves an OpenAI-compatible endpoint on
     127.0.0.1:10531, signed in with Codex's login (or a browser sign-in). Running, it joins the providers on its own
-    (as a running Ollama does), with its text models; not running, the providers list has a row to start it (`npx -y openai-oauth@2 --detach`; `npx openai-oauth stop` stops it). On the test
-    paper: 174 s with gpt-5.5 at the recommended levels, nothing failed, no cost beyond the plan; a section takes about
-    8 s against 13 s through `codex exec`.
+    (as a running Ollama does), with its text models. The providers list can start it when selected by the reader
+    (`npx -y openai-oauth@2.0.0 --detach`; `npx openai-oauth@2.0.0 stop` stops it).
   - **OpenRouter in one click**: OAuth with PKCE. The server makes the verifier, OpenRouter's consent page sends the
     reader back to `/oauth/openrouter` with a code, the code and verifier become a key, and the key waits in memory
     until the reader picks models and saves. Free models are listed first (the free router, then known makers, never an
@@ -126,8 +138,8 @@ Models (⚙ Model & API), ported from ThoughtDAG's model access:
   translation came back short: translations are made in parts of about 6,500 characters, a paragraph's sentences
   and its levels counted (a section of many short paragraphs has more levels than text: #99).
 - **API providers**: keys from the environment, or a `.env` here or in `~/.textfold/`: Zhipu, Qwen, OpenAI,
-  Anthropic, Google, DeepSeek, Kimi, OpenRouter, Ollama. (Until v0.9 ThoughtDAG's `.env` was read too; its providers
-  were copied once into the settings.) Others are added in the dialog
+  Anthropic, Google, DeepSeek, Kimi, OpenRouter, Ollama. A saved opt-in for ThoughtDAG's legacy `.env` imports that
+  file's providers once into TextFold's settings. Others are added in the dialog
   from ThoughtDAG's presets (OpenRouter, Z.ai, 智谱, GLM Coding, Kimi Code, MiniMax, DeepSeek, OpenAI, Google AI Studio,
   Moonshot, Ollama, a ChatGPT bridge, Anthropic, custom): the endpoint's `/models` is fetched and you pick which to offer.
   Keys added here stay in `~/.textfold/settings.json` (mode 600), outside the project folder. (Under earlier
@@ -186,9 +198,12 @@ is on: in a passage's question and its follow-ups, and in **Ask the whole text**
 text is opened, shown only where questions go to an agent: `app.js` askAgent; `/api/ask` `tools`, `models.ask_spec`).
 Then the agent looks it up on the web with its own tools, and nothing else (`agents.py`): Claude Code with
 `--tools WebSearch,WebFetch`, allowed without asking and no MCP server; CodeBuddy the same, with its StructuredOutput;
-Codex with `--search` in its read-only sandbox; Pi with `--no-builtin-tools`, its extensions' tools alone; Antigravity
+Codex with `--search` and a scratch-only permission profile; Pi with `--no-builtin-tools`, its extensions' tools alone; Antigravity
 with `search_web` and `read_url_content` beside `finish`, in its sandbox. None of them
-changes a file (Claude Code, CodeBuddy and Pi read none and run no command either; Codex may read, in its sandbox); each
+changes a file. For Codex, generation requires an installed CLI that accepts strict configuration and named permission
+profiles. TextFold disables its shell, model-accessible plug-ins, and local project instructions. An approved custom
+Codex launcher is trusted to forward these options to Codex. Windows sandbox backends that do not support these
+filesystem limits refuse the file operations. Each agent
 keeps its own system prompt, ours appended. The prompt adds that what
 comes from outside the paper ends with [[?]], each page drawn on given as a Markdown link (the reader draws links in
 answers: `reader.js`, `mdLite`); such an answer may take up to 15 minutes, is kept apart from one without the web
@@ -327,6 +342,12 @@ words before said `en`: it is read as the text's language until the text is firs
 written so then (`notes.settle_base`).
 
 ## PDFs and web pages
+
+For web imports, the URL chosen by the reader grants access to its exact origin (scheme, host and port) for that import.
+An explicitly selected intranet site can serve its own article and images. Redirects or pictures on other origins must
+resolve entirely to public addresses. The importer connects to a vetted address and preserves the site's HTTP Host and
+TLS identity. It honors HTTP(S) proxies and their bypass settings. Proxy deployments need local DNS resolution and a
+proxy that accepts numerical destinations. Live interactive figures load in the reader's browser.
 
 A PDF dropped on the landing is read in the browser first (pdf.js, `refsOf` in app.js): an arXiv id from its margin
 stamp, a DOI from its metadata or its first page (only the first: the second is often the references). `POST /api/pdfs`

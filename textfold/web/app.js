@@ -19,7 +19,20 @@
   const SHORT = { en: 'EN', zh: '中', 'zh-Hant': '繁', ja: '日', ko: '한', es: 'ES', fr: 'FR', de: 'DE', pt: 'PT', it: 'IT', ru: 'RU', hi: 'हि' };   // (any other: its code)
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const h = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
-  const api = (path, body) => fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  const PLAN_KEY = 'textfold.chatgpt.reader';
+  const PLAN_USAGE = 'https://chatgpt.com/settings/usage';
+  const planModel = (id) => !!id && id.startsWith('chatgpt-plan/');
+  const planHeaders = (path) => {
+    try {
+      const key = sessionStorage.getItem(PLAN_KEY);
+      if (key && new URL(path, location.href).origin === location.origin) return { 'X-TextFold-ChatGPT': key };
+    } catch { /* session storage disabled */ }
+    return {};
+  };
+  window.DRChatGPTHeaders = planHeaders;
+  const api = (path, body) => fetch(path, body === undefined ? { headers: planHeaders(path) } : {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...planHeaders(path) }, body: JSON.stringify(body),
+  })
     .then(async (r) => { const d = await r.json(); if (!r.ok) throw Object.assign(new Error(d.error || r.statusText), { code: d.code, data: d }); return d; });
   let modelData = BOOT.modelData || null, modelRefresh = null;
   function refreshModels() {
@@ -815,10 +828,11 @@
   }
   // a file to the server: a PDF with what it says it is (the paper online, or a conversion, or a wait for the engine);
   // a Word file, an e-book, a picture, converted the same way
-  async function uploadFile(file, lang) {
+  async function uploadFile(file, lang, allowPlan) {
     let refs = [];
     if (isPdf(file)) try { refs = await refsOf(file); } catch { /* a PDF pdf.js cannot open: the engine may still read it */ }
     const r = await fetch('/api/files', { method: 'POST', body: file, headers: { 'Content-Type': file.type || 'application/octet-stream',
+      ...(allowPlan ? planHeaders('/api/files') : {}),
       'X-Name': encodeURIComponent(file.name), 'X-Lang': lang, 'X-Refs': encodeURIComponent(JSON.stringify(refs)) } });
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || r.statusText);
@@ -832,16 +846,16 @@
   const extOf = (name) => ((/\.([a-z0-9]+)$/i.exec(name || '') || [])[1] || '').toLowerCase();
   const forEngine = (file) => isPdf(file) || ENGINE_EXT.includes(extOf(file.name));
   const isText = (file) => TEXT_EXT.includes(extOf(file.name));
-  async function importFile(file, lang) {
+  async function importFile(file, lang, allowPlan = true) {
     if (file.size > 100 * 1024 * 1024) throw new Error('too-large');
-    if (forEngine(file)) return uploadFile(file, lang);
+    if (forEngine(file)) return uploadFile(file, lang, allowPlan);
     if (!isText(file)) throw new Error('not-supported');
     const text = await file.text();
     if (!text.trim()) throw new Error('empty');
     return api('/api/import', { name: file.name, text });
   }
   // File selection, drop and browser tools share the upload dispatch and PDF reference discovery.
-  window.TFUploads = { importFile, isText,
+  window.TFUploads = { importFile: (file, lang) => importFile(file, lang, false), isText,
     language: () => document.getElementById('lang')?.value || window.__reader?.lang || readLang,
     hasModel: () => !!modelName,
     supportsLanguage: lang => !!(BOOT.langs || DATA?.langs || I18N.NATIVE)?.[lang] };
@@ -1013,7 +1027,7 @@
   // ── what is new (news.py): the first time TextFold opens after an update, the words of the releases since the one
   //    the reader was last told of, in a dialog (theirs, in Chinese or else in English); a quiet release only says it is
   //    installed. Settings opens the newest release's words again ──
-  const REPO = 'https://github.com/chenxiachan/textfold';
+  const REPO = 'https://github.com/BC-GB/textfold';
   // TextFold where the reader already works (Settings, last: to find them again): the browser's button in its store,
   // and TextFold Bridge, @adalach's plugin, in Obsidian's community plugins (README: Works with your tools)
   const TOOLS = {
@@ -1494,7 +1508,7 @@
       editTranslation,
       // questions go to an agent on this computer, which can look them up on the web (reader.js: the switch by a question)
       askAgent() {
-        const d = modelData, m = d && (d.models || []).find((x) => x.id === (d.askModel || d.selected));
+        const d = modelData, m = d && (d.models || []).find((x) => x.id === (d.savedAskModel ? d.askModel : d.selected));
         return !!m && m.kind === 'agent';
       },
     };
@@ -1542,9 +1556,7 @@
     document.getElementById('model-label').textContent = modelLabel();
     renderConnect();
   }
-  // No model yet (no agent on this computer, no provider): the ways in, on the landing itself. OpenRouter's one-click
-  // authorisation (free models); the ChatGPT plan through the local bridge, started from here; or the settings.
-  let bridgeStarting = false, bridgeState = null;
+  // No model yet: OpenRouter's one-click authorization, direct ChatGPT sign-in, or the other providers in Settings.
   function renderConnect() {
     const box = document.getElementById('connect');
     if (!box) return;
@@ -1555,23 +1567,15 @@
       box.innerHTML = `<p class="cn-looking">${esc(t().cn_looking)}</p>`;
       return;
     }
-    const T = t(), br = BOOT.bridge || {};
+    const T = t();
     box.innerHTML = `<div class="cn-t">${esc(T.cn_title)}</div><p>${esc(T.cn_sub)}</p><div class="cn-ways">` +
       `<button type="button" class="primary cn-or">${esc(T.cn_or)}</button>` +
-      (br.node || br.running ? `<button type="button" class="cn-gpt"${bridgeStarting ? ' disabled' : ''}>${esc(bridgeStarting ? T.bridge_starting : T.cn_gpt)}</button>` : '') +
-      `</div>${bridgeNote(bridgeState, T)}<button type="button" class="linkbtn cn-more">${esc(T.cn_more)}</button>`;
+      (modelData?.chatgpt?.available ? `<button type="button" class="cn-gpt">${esc(T.cn_gpt)}</button>` : '') +
+      `</div><button type="button" class="linkbtn cn-more">${esc(T.cn_more)}</button>`;
     box.querySelector('.cn-or').onclick = async (e) => { e.target.disabled = true; await connectOpenRouter('/'); e.target.disabled = false; };
     box.querySelector('.cn-more').onclick = () => openSettings({ add: true });
     const g = box.querySelector('.cn-gpt');
-    if (g) g.onclick = async () => {
-      bridgeStarting = true; bridgeState = null; renderConnect();
-      try { bridgeState = await startBridge((st) => { bridgeState = st; renderConnect(); }); } catch (x) { bridgeState = { error: x.message }; }
-      bridgeStarting = false;
-      const d = await refreshModels();
-      modelName = d.selectedName || '';
-      askName = d.askName || '';
-      renderSidebar(); renderLanding();
-    };
+    if (g) g.onclick = () => openSettings({ plan: true });
   }
   // on another page of the app (the notes page): the language and the help at its top, as on the landing
   const topLang = !landing && document.getElementById('ui-lang');
@@ -1897,12 +1901,14 @@
     let agentForm = null;     // the custom agent being added or edited (#15): {key?, command, protocol, name, found, picked, manual, version, err, busy}
     const tests = {};         // the last connection test of each model: the levels' (gen), the questions' (ask)
     let bridgeStarting = false, bridgeState = null;
+    let planBusy = false, planUrl = '', planError = '';
     let storageDraft = null, storageMode = null, storageBusy = false, storageError = null;   // ({code, message}: why a folder was refused)
     let engineDraft = null, engineError = null;   // the PDF engine's folder, typed or chosen, and why it was refused
     const dlg = h('dialog', 'settings prefs'); document.body.append(dlg);
     dlg.addEventListener('close', () => { settingsOpen = false; });
     const T = () => t();
     const host = (u) => { try { return new URL(u).host; } catch { return u; } };
+    const providerOrigin = (url) => { try { return new URL(url).origin; } catch { return ''; } };
     // the name an endpoint of no preset is given when none is written: its host (providers.name_of, #115)
     const nameOf = (u) => (u ? host(/:\/\//.test(u) ? u : `http://${u}`).toLowerCase().replace(/^(api|www)\./, '') : '');
     const customOf = (g) => (data.customAgents || []).find((a) => `custom/${a.key}` === g);
@@ -1938,21 +1944,115 @@
         g.items.push(m);
       }
       const opts = (chosen) => groups.map((g) => `<optgroup label="${esc(groupName(g.key))}${g.agent ? ' · agent' : ''}">${g.items.map((m) =>
-        `<option value="${esc(m.id)}"${m.id === chosen ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</optgroup>`).join('');
+        `<option value="${esc(m.id)}" data-target="${esc(m.target)}"${m.id === chosen ? ' selected' : ''}>${esc(m.name + (m.base ? ` · ${host(m.base)}` : ''))}</option>`).join('')}</optgroup>`).join('');
+      const empty = (saved) => esc(saved ? `${t.st_choose_model} · ${saved}` : t.st_choose_model);
+      const pendingAsk = data.savedAskModel && !data.askModel;
       // questions: the levels' model unless another is chosen; its reasoning, where it has levels of it (Auto: the default)
-      const asked = data.models.find((m) => m.id === (data.askModel || data.selected)), efforts = (asked && asked.efforts) || [];
+      const asked = data.models.find((m) => m.id === (data.savedAskModel ? data.askModel : data.selected)), efforts = (asked && asked.efforts) || [];
       const effort = efforts.length ? `<select class="st-effort" aria-label="${esc(t.st_effort)}" title="${esc(t.st_effort)}"><option value="">${esc(t.eff_auto)}</option>${efforts.map((e) =>
         `<option value="${esc(e)}"${e === data.askEffort ? ' selected' : ''}>${esc(t[`eff_${e}`] || e)}</option>`).join('')}</select>` : '';
       const testBtn = (k) => {
         const r = tests[k];
-        return `<button type="button" class="st-btn st-testbtn${r ? (r.ok ? ' ok' : ' bad') : ''}" data-test="${k}">${r ? (r.ok ? `✓ ${r.seconds} s` : `✕ ${esc(t.test_bad)}`) : esc(t.test)}</button>`;
+        return `<button type="button" class="st-btn st-testbtn${r ? (r.ok ? ' ok' : ' bad') : ''}" data-test="${k}"${(k === 'ask' ? asked : data.selected) ? '' : ' disabled'}>${r ? (r.ok ? `✓ ${r.seconds} s` : `✕ ${esc(t.test_bad)}`) : esc(t.test)}</button>`;
       };
       const failed = ['gen', 'ask'].filter((k) => tests[k] && !tests[k].ok)
         .map((k) => `<p class="st-models-err">${esc(k === 'gen' ? t.st_gen : t.st_ask)}: ${esc(tests[k].error || '')}</p>`).join('');
+      const plan = planModel(data.selected) || planModel(data.askModel);
       return `<div class="st-models">` +
-        `<label for="st-gen">${esc(t.st_gen)}</label><select name="model" id="st-gen" class="st-model wide">${opts(data.selected)}</select>${testBtn('gen')}` +
-        `<label for="st-ask">${esc(t.st_ask)}</label><select id="st-ask" class="st-askmodel${effort ? '' : ' wide'}"><option value="">${esc(t.st_same)}</option>${opts(data.askModel)}</select>${effort}${testBtn('ask')}` +
-        `</div>${failed}`;
+        `<label for="st-gen">${esc(t.st_gen)}</label><select name="model" id="st-gen" class="st-model wide"><option value="">${empty(data.selected ? null : data.savedModel)}</option>${opts(data.selected)}</select>${testBtn('gen')}` +
+        `<label for="st-ask">${esc(t.st_ask)}</label><select id="st-ask" class="st-askmodel${effort ? '' : ' wide'}"><option value="">${esc(t.st_same)}</option>${pendingAsk ? `<option disabled selected>${empty(data.savedAskModel)}</option>` : ''}${opts(data.askModel)}</select>${effort}${testBtn('ask')}` +
+        `</div>${plan ? `<p class="st-note">${esc(t.plan_active)} · ${usageLink(t)}</p>` : ''}${failed}`;
+    }
+
+    function usageLink(t, cls = '') {
+      return `<a class="${cls}" href="${PLAN_USAGE}" target="_blank" rel="noopener noreferrer">${esc(t.plan_manage)}</a>`;
+    }
+
+    function planSection() {
+      const status = data.chatgpt || {};
+      if (!status.available) return '';
+      const t = T(), disabled = planBusy ? ' disabled' : '';
+      const button = (action, label, cls = 'st-btn') =>
+        `<button type="button" class="${cls}" data-plan="${action}"${disabled}>${esc(label)}</button>`;
+      let actions = '';
+      if (status.pending) {
+        actions = planUrl ? `<a href="${esc(planUrl)}" target="_blank" rel="noopener noreferrer">${esc(t.plan_open_browser)}</a>` : '';
+        if (!status.connected) actions += button('disconnect', t.cancel);
+      } else if (status.connected) {
+        if (!status.sharing) actions += button('consent', t.plan_enable, 'primary');
+        if (status.paused || (status.sharing && !status.models)) actions += button('retry', t.st_retry);
+        actions += button('disconnect', t.plan_sign_out);
+      } else {
+        actions = button('start', t.plan_continue, 'primary');
+        if (status.registered) actions += button('switch', t.plan_switch);
+      }
+      const message = status.pending ? t.plan_pending : status.connected ?
+        `${status.label} · ${status.sharing ? t.plan_enabled : t.plan_no_grant}` : t.plan_restart;
+      return `<h3>${esc(t.plan_title)}</h3><div class="st-form">
+        <p class="st-note">${esc(t.plan_disclosure)}</p>
+        <p class="st-note" role="status">${esc(message)}</p>
+        ${planError || status.error ? `<p class="st-note warn" role="alert">${esc(planError || status.error)}</p>` : ''}
+        <div class="st-row">${status.paused ? usageLink(t, 'st-btn st-out') : ''}${actions}${status.paused ? '' : usageLink(t)}</div>
+      </div>`;
+    }
+
+    function showPlanWelcome(status) {
+      const key = `textfold.chatgpt.welcome.${status.registration}`;
+      if (!status.sharing || !status.registration || store.get(key)) return;
+      store.set(key, '1');
+      const t = T(), welcome = h('dialog', 'settings prefs', `<div class="stp">
+        <header class="stp-head"><h2>${esc(t.plan_welcome)}</h2></header>
+        <div class="stp-body"><p class="st-note">${esc(t.plan_welcome_body)} ${usageLink(t)}</p></div>
+        <footer class="stp-foot"><button type="button" class="primary">${esc(t.plan_got_it)}</button></footer></div>`);
+      document.body.append(welcome);
+      welcome.addEventListener('close', () => welcome.remove());
+      welcome.querySelector('button').onclick = () => welcome.close();
+      welcome.showModal();
+    }
+
+    async function watchPlan() {
+      while (dlg.isConnected && data.chatgpt?.pending) {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        if (!dlg.isConnected || !data.chatgpt?.pending) return;
+        const status = await api('/api/chatgpt/status');
+        if (!status.pending && data.chatgpt?.pending) {
+          planUrl = '';
+          update(await api('/api/models'), true);
+        }
+      }
+    }
+
+    async function planAction(action) {
+      if (planBusy) return;
+      planBusy = true;
+      planError = '';
+      q('.st-plan').innerHTML = planSection();
+      wire();
+      try {
+        if (action === 'retry' || action === 'disconnect') {
+          await api(`/api/chatgpt/${action}`, {});
+        } else {
+          if (!sessionStorage.getItem(PLAN_KEY)) {
+            const bytes = crypto.getRandomValues(new Uint8Array(32));
+            sessionStorage.setItem(PLAN_KEY, Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(''));
+          }
+          const { url, ...status } = await api('/api/chatgpt/start', { consent: action === 'consent', newAccount: action === 'switch' });
+          planUrl = url || '';
+          data.chatgpt = status;
+        }
+      } catch (error) {
+        planError = error.message;
+      }
+      planBusy = false;
+      if (!dlg.isConnected) return;
+      if (data.chatgpt?.pending && action !== 'disconnect') {
+        q('.st-plan').innerHTML = planSection();
+        wire();
+        await watchPlan();
+      } else {
+        planUrl = '';
+        update(await api('/api/models'), true);
+      }
     }
 
     function agentSection() {
@@ -1999,12 +2099,25 @@
         <label>${esc(t.ca_manual)}<input class="ca-manual" value="${esc(f.manual || '')}" placeholder="kimi-k2, glm-4.6" spellcheck="false" autocomplete="off"></label>
         <div class="st-row end"><button type="button" class="st-btn ca-cancel">${esc(t.cancel)}</button><button type="button" class="primary ca-save"${caReady(f) ? '' : ' disabled'}>${esc(t.ca_save)}</button></div></div>`;
     }
+    async function agentRequest(path, payload) {
+      try {
+        return await api(path, payload);
+      } catch (error) {
+        if (error.code !== 'agent-approval') throw error;
+        if (!window.desktop?.approveAgent) {
+          throw new Error("In a local terminal, run 'textfold approve-local-agent' and enter the exact command. Then try again.");
+        }
+        if (!await window.desktop.approveAgent(payload.command)) throw error;
+        return api(path, payload);
+      }
+    }
+
     async function detectAgent(saved) {   // (saved: the models an edited agent was saved with, ticked again where listed)
       const f = agentForm;
       if (!f || !f.command.trim()) return;
       f.busy = true; f.err = ''; f.version = ''; render();
       try {
-        const r = await api('/api/agents/probe', { command: f.command, protocol: f.protocol || null });
+        const r = await agentRequest('/api/agents/probe', { command: f.command.trim(), protocol: f.protocol || null });
         if (agentForm !== f) return;
         f.version = r.version || ''; f.protocol = r.protocol || f.protocol; f.found = r.models || []; f.err = r.error || (r.protocol ? '' : T().ca_need_proto);
         const keep = saved || f.picked;
@@ -2017,7 +2130,7 @@
     function providerSection() {
       const t = T();
       const src = (p) => p.source === 'thoughtdag' ? t.st_from_td : p.source === 'env' ? t.st_from_env : p.source === 'bridge' ? t.st_auto : t.st_added;
-      const rows = data.providers.map((p) => `<div class="st-item"><div class="st-main"><b>${esc(p.name)}<span class="st-src ${p.source}">${esc(src(p))}</span></b>
+      const rows = data.providers.filter((p) => p.key !== 'chatgpt-plan').map((p) => `<div class="st-item"><div class="st-main"><b>${esc(p.name)}<span class="st-src ${p.source}">${esc(src(p))}</span></b>
         <span class="st-meta">${esc(host(p.base))}</span></div><span class="st-aside">${esc(t.st_models.replace('{n}', p.models.length))}</span>
         ${p.source === 'ui' ? `<span class="st-acts"><button type="button" class="st-btn st-edit" data-key="${esc(p.key)}">${esc(t.st_edit)}</button><button type="button" class="st-btn danger st-del" data-key="${esc(p.key)}">${esc(t.st_remove)}</button></span>` : ''}</div>`).join('');
       const td = '';   // (ThoughtDAG's .env is no longer read: its providers were copied into these settings once, v0.8.3)
@@ -2048,12 +2161,12 @@
         ? `<div class="st-bridge on"><i></i>${esc(t.bridge_on.replace('{n}', b.models.length))}</div><p class="st-note">${esc(t.bridge_hint)}</p>`
         : `<div class="st-bridge"><i></i><span>${esc(form.bridgeStarting ? t.bridge_starting : t.bridge_off)}</span>${b.node && !form.bridgeStarting ? `<button type="button" class="pf-bridge">${esc(t.bridge_start)}</button>` : ''}</div>
           ${bridgeNote(b, t)}<p class="st-note">${esc(t.bridge_hint)}</p>${b.node ? '' : `<p class="st-note warn">${esc(t.bridge_no_node)}</p>`}
-          <div class="st-cmd"><code>npx openai-oauth</code><button type="button" class="linkbtn pf-copy">${esc(t.copy)}</button></div>`;
+          <div class="st-cmd"><code>${esc(`npx ${data.bridgePackage}`)}</code><button type="button" class="linkbtn pf-copy">${esc(t.copy)}</button></div>`;
       return `<div class="st-form">
         <label>${esc(t.st_preset)}<select class="pf-preset">${opts}</select></label>${oauth}${minted}${bridge}
         ${form.preset === 'custom' ? `<label>${esc(t.st_name)}<input class="pf-name" value="${esc(form.name || '')}" placeholder="${esc(nameOf(form.base))}"></label>` : ''}
-        <label>${esc(t.base_url)}<input class="pf-base" value="${esc(form.base || '')}" placeholder="https://…/v1"></label>
-        ${preset.nokey || form.minted ? '' : `<label><span>${esc(t.api_key)}${preset.keyUrl ? ` · <a href="${preset.keyUrl}" target="_blank" rel="noopener">${esc(host(preset.keyUrl))}</a>` : ''}</span><input class="pf-key" type="password" placeholder="${esc(form.key ? t.st_key_kept : 'sk-…')}"></label>`}
+        <label>${esc(t.base_url)}<input class="pf-base"${form.minted ? ' readonly' : ''} value="${esc(form.base || '')}" placeholder="https://…/v1"></label>
+        ${preset.nokey || form.minted ? '' : `<label><span>${esc(t.api_key)}${preset.keyUrl ? ` · <a href="${preset.keyUrl}" target="_blank" rel="noopener">${esc(host(preset.keyUrl))}</a>` : ''}</span><input class="pf-key" type="password" placeholder="${esc(form.savedOrigin && form.savedOrigin === providerOrigin(form.base) ? t.st_key_kept : 'sk-…')}"></label>`}
         <div class="st-row"><button type="button" class="st-btn pf-fetch">${esc(t.st_fetch)}</button><span class="pf-err">${esc(form.err || '')}</span></div>
         ${list}
         <div class="st-row end"><button type="button" class="st-btn pf-cancel">${esc(t.cancel)}</button><button type="button" class="primary pf-save"${form.found && form.found.length ? '' : ' disabled'}>${esc(t.st_save_provider)}</button></div></div>`;
@@ -2075,6 +2188,7 @@
           ${app || news ? `<div class="st-item st-app"><div class="st-main"><b>TextFold ${esc(app || news.version)}</b><span class="st-meta">${app ? `${esc(t.up_note)} ` : ''}<a href="${REPO}" target="_blank" rel="noopener">★ ${esc(t.up_star)}</a></span><span class="st-upd-msg" aria-live="polite"></span></div>${news && news.last ? `<button type="button" class="st-btn st-news">${esc(t.up_whatsnew)}</button>` : ''}${app ? `<button type="button" class="st-btn st-upd">${esc(t.up_check)}</button>` : ''}</div>` : ''}
         </div></section>
         <section><h3>${esc(t.st_models_h)}</h3><div class="st-model-area">${modelSection()}${discoveryState()}</div></section>
+        <section class="st-plan"${data.chatgpt?.available ? '' : ' hidden'}>${planSection()}</section>
         <section><h3>${esc(t.st_agents)}</h3><div class="st-agent-area">${loaded ? agentSection() : ''}</div></section>
         <section><h3>${esc(t.st_providers)}</h3><div class="st-provider-area">${loaded ? providerSection() : ''}</div></section>
         <section class="st-storage">${storageSection()}</section>
@@ -2090,8 +2204,7 @@
       if (storageInput) storageInput.oninput = () => { storageDraft = storageInput.value; };
       if (storageInput) storageInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); saveLibrary(); } };
       if (storageSelect) storageSelect.onchange = () => { storageMode = storageSelect.value; };
-      // a folder chosen in the system's dialog is the choice made: kept at once for the next start, as the line under it
-      // says (#67: chosen, and the button under the explanation not pressed, it was gone after the restart)
+      // Start saving from the folder picker too, so its approved choice is kept for the next start.
       const pickLibrary = q('.st-storage-pick');
       if (pickLibrary) pickLibrary.onclick = async () => {
         try { const path = await window.desktop.chooseLibraryFolder(); if (path) { storageDraft = path; await saveLibrary(); } }
@@ -2099,9 +2212,15 @@
       };
       async function saveLibrary(cancel = false) {
         storageBusy = true; storageError = null; render();
-        try { data.storage = await api('/api/storage', { path: storageDraft ?? data.storage.pending, mode: storageMode ?? data.storage.mode, cancel }); }
+        try {
+          const path = storageDraft ?? data.storage.pending;
+          const mode = storageMode ?? data.storage.mode;
+          if (!cancel && path?.trim() && window.desktop?.approveFolder &&
+              !await window.desktop.approveFolder('library-' + mode, path)) return;
+          data.storage = await api('/api/storage', { path, mode, cancel });
+        }
         catch (error) { storageError = { code: error.code, message: error.message }; }
-        storageBusy = false; render();
+        finally { storageBusy = false; render(); }
       }
       const saveLibraryButton = q('.st-storage-save'), cancelLibraryButton = q('.st-storage-cancel');
       if (saveLibraryButton) saveLibraryButton.onclick = () => saveLibrary();
@@ -2143,7 +2262,15 @@
       if (inst) inst.onclick = async () => {
         inst.disabled = true; engineError = null;
         const path = (engineDraft ?? '').trim();
-        try { watch(await api('/api/engine/install', path && path !== e.path ? { path } : {}), () => {}); engineDraft = null; follow(); }
+        try {
+          const custom = path && path !== e.path;
+          if (custom && window.desktop?.approveFolder && !await window.desktop.approveFolder('engine-install', path)) {
+            renderEngine();
+            return;
+          }
+          watch(await api('/api/engine/install', custom ? { path } : {}), () => {});
+          engineDraft = null; follow();
+        }
         catch (x) { engineError = { code: x.code, message: errText(x.message) }; renderEngine(); }
       };
       const where = box.querySelector('.st-engine-path'), pick = box.querySelector('.st-engine-pick');
@@ -2170,9 +2297,12 @@
       data = modelData = d; loaded = true;
       modelName = d.selectedName || ''; askName = d.askName || '';
       renderSidebar(); if (landing) renderLanding();
+      if (dlg.open && d.chatgpt?.sharing) showPlanWelcome(d.chatgpt);
       if (!background) { render(); return; }
       // A discovery result must not rebuild a provider form the reader is editing.
       q('.st-model-area').innerHTML = modelSection() + discoveryState();
+      q('.st-plan').hidden = !data.chatgpt?.available;
+      q('.st-plan').innerHTML = planSection();
       if (!agentForm) q('.st-agent-area').innerHTML = agentSection();
       if (!form) q('.st-provider-area').innerHTML = providerSection();
       renderEngine();
@@ -2194,6 +2324,14 @@
     }
 
     function wire() {
+      q('.st-plan').querySelectorAll('[data-plan]').forEach((button) => {
+        button.onclick = () => planAction(button.dataset.plan).catch((error) => {
+          if (!dlg.isConnected) return;
+          planError = error.message;
+          q('.st-plan').innerHTML = planSection();
+          wire();
+        });
+      });
       const retry = q('.st-retry');
       if (retry) retry.onclick = discover;
       dlg.querySelectorAll('.st-close').forEach((b) => { b.onclick = () => dlg.close(); });
@@ -2210,15 +2348,26 @@
       };
       q('.st-ui').onchange = (e) => { setReaderLang(e.target.value); render(); };
       const sel = q('.st-model');
-      if (sel) sel.onchange = async () => { delete tests.gen; if (!data.askModel) delete tests.ask; update(await api('/api/models/select', { model: sel.value })); };
       const askSel = q('.st-askmodel'), effSel = q('.st-effort');
-      if (askSel) askSel.onchange = async () => { delete tests.ask; update(await api('/api/models/select', { task: 'ask', model: askSel.value || null, effort: null })); };
-      if (effSel) effSel.onchange = async () => { delete tests.ask; update(await api('/api/models/select', { task: 'ask', model: data.askModel || null, effort: effSel.value || null })); };
+      const saveChoice = async (select, task, effort = null) => {
+        delete tests[task];
+        if (task === 'gen' && !data.savedAskModel) delete tests.ask;
+        try {
+          const target = select.selectedOptions[0]?.dataset.target;
+          update(await api('/api/models/select', { task, model: select.value || null, target, effort: task === 'ask' ? effort : undefined }));
+        } catch (err) {
+          tests[task] = { ok: false, error: err.message };
+          update(await api('/api/models'));
+        }
+      };
+      if (sel) sel.onchange = () => saveChoice(sel, 'gen');
+      if (askSel) askSel.onchange = () => saveChoice(askSel, 'ask');
+      if (effSel) effSel.onchange = () => saveChoice(askSel, 'ask', effSel.value || null);
       dlg.querySelectorAll('.st-testbtn').forEach((tb) => {
         tb.onclick = async () => {
           const k = tb.dataset.test;
           tb.disabled = true; tb.textContent = '…';
-          tests[k] = await api('/api/settings/test', k === 'ask' ? { task: 'ask' } : { model: data.selected }).catch((e) => ({ ok: false, error: e.message }));
+          tests[k] = await api('/api/settings/test', { task: k }).catch((e) => ({ ok: false, error: e.message }));
           render();
         };
       });
@@ -2253,7 +2402,7 @@
         saveBtn.onclick = async () => {
           if (!caReady(f)) return;
           try {
-            const d = await api('/api/agents/save', { key: f.key, name: f.name.trim() || caName(f.command), command: f.command.trim(), protocol: f.protocol, models: caModels(f) });
+            const d = await agentRequest('/api/agents/save', { key: f.key, name: f.name.trim() || caName(f.command), command: f.command.trim(), protocol: f.protocol, models: caModels(f) });
             agentForm = null; update(d);
           } catch (x) { f.err = x.message; render(); }
         };
@@ -2262,7 +2411,7 @@
       if (td) td.onchange = async () => update(await api('/api/settings', { use_thoughtdag_env: td.checked }));
       dlg.querySelectorAll('.st-del').forEach((b) => { b.onclick = async () => update(await api('/api/providers/remove', { key: b.dataset.key })); });
       dlg.querySelectorAll('.st-edit').forEach((b) => {
-        b.onclick = () => { const p = data.providers.find((x) => x.key === b.dataset.key); form = { key: p.key, preset: p.preset || 'custom', name: p.name, base: p.base }; render(); };
+        b.onclick = () => { const p = data.providers.find((x) => x.key === b.dataset.key); form = { key: p.key, preset: p.preset || 'custom', name: p.name, base: p.base, savedOrigin: providerOrigin(p.base) }; render(); };
       });
       const bg = q('.st-bridgego');
       if (bg) bg.onclick = async () => {   // start the bridge; its models join the list once it answers
@@ -2280,7 +2429,24 @@
       ps.onchange = () => { const p = data.presets.find((x) => x.id === ps.value); form = { preset: p.id, name: '', base: p.base }; render(); };   // another kind: a new provider, the edited one stays
       const keep = () => { form.base = q('.pf-base').value.trim(); if (q('.pf-name')) form.name = q('.pf-name').value.trim(); if (q('.pf-key') && q('.pf-key').value) form.api_key = q('.pf-key').value.trim(); };
       q('.pf-fetch').onclick = () => fetchModels();
-      if (q('.pf-name')) q('.pf-base').oninput = () => { q('.pf-name').placeholder = nameOf(q('.pf-base').value.trim()); };
+      const baseInput = q('.pf-base'), keyInput = q('.pf-key');
+      if (keyInput) keyInput.oninput = () => { form.api_key = keyInput.value.trim(); };
+      baseInput.oninput = () => {
+        const base = baseInput.value.trim(), origin = providerOrigin(base);
+        if (providerOrigin(form.base) !== origin && keyInput) {
+          keyInput.value = '';
+          form.api_key = '';
+        }
+        if (keyInput) keyInput.placeholder = form.savedOrigin && form.savedOrigin === origin ? T().st_key_kept : 'sk-…';
+        if (q('.pf-name')) q('.pf-name').placeholder = nameOf(base);
+        if (form.base !== base) {
+          form.found = null;
+          form.picked = [];
+          q('.pf-save').disabled = true;
+          if (q('.st-pick')) q('.st-pick').hidden = true;
+        }
+        form.base = base;
+      };
       const pick = q('.st-pick'), count = q('.st-count'), search = q('.st-search');
       const recount = () => { if (count && pick) count.textContent = `· ${pick.querySelectorAll('input:checked').length}`; };
       if (pick) { pick.onchange = recount; recount(); }
@@ -2291,7 +2457,7 @@
       const oa = q('.pf-oauth');
       if (oa) oa.onclick = async () => { oa.disabled = true; if (window.desktop) dlg.close(); await connectOpenRouter(location.pathname + location.search); };
       const cp = q('.pf-copy');
-      if (cp) cp.onclick = () => navigator.clipboard.writeText('npx openai-oauth').then(() => { cp.textContent = '✓'; }, () => {});
+      if (cp) cp.onclick = () => navigator.clipboard.writeText(`npx ${data.bridgePackage}`).then(() => { cp.textContent = '✓'; }, () => {});
       const bs = q('.pf-bridge');
       if (bs) bs.onclick = async () => {
         form.bridgeStarting = true; render();
@@ -2309,8 +2475,11 @@
       q('.pf-save').onclick = async () => {
         keep();
         const picked = [...dlg.querySelectorAll('.st-pick input:checked')].map((i) => i.value);
-        const d = await api('/api/providers/save', { key: form.key, preset: form.preset, name: form.name, base: form.base, api_key: form.api_key, models: picked, minted: !!form.minted });
-        form = null; update(d);
+        const editing = form;
+        try {
+          const d = await api('/api/providers/save', { key: editing.key, preset: editing.preset, name: editing.name, base: editing.base, api_key: editing.api_key, models: picked, minted: !!editing.minted });
+          if (form === editing) { form = null; update(d); }
+        } catch (x) { if (form === editing) { form.err = x.message; render(); } }
       };
     }
     async function fetchModels() {
@@ -2318,13 +2487,15 @@
       if (q('.pf-base')) form.base = q('.pf-base').value.trim();
       if (q('.pf-name')) form.name = q('.pf-name').value.trim();
       if (q('.pf-key') && q('.pf-key').value) form.api_key = q('.pf-key').value.trim();
+      const editing = form, base = form.base;
       const err = q('.pf-err');
       form.err = '…';   // (kept in the form: a redraw while the startup scan lands no longer wipes it, #12)
       if (err) err.textContent = '…';
       try {
-        const r = await api('/api/providers/probe', { base: form.base, api_key: form.api_key, key: form.key, preset: form.preset, minted: !!form.minted });
+        const r = await api('/api/providers/probe', { base, api_key: form.api_key, key: form.key, preset: form.preset, minted: !!form.minted });
+        if (form !== editing || form.base !== base) return;
         form.found = r.models; form.picked = r.picked; form.err = ''; render();
-      } catch (x) { if (!form) return; form.err = x.message; const e2 = q('.pf-err'); if (e2) e2.textContent = x.message; }
+      } catch (x) { if (form !== editing || form.base !== base) return; form.err = x.message; const e2 = q('.pf-err'); if (e2) e2.textContent = x.message; }
     }
 
     dlg.addEventListener('close', () => dlg.remove());
@@ -2342,6 +2513,8 @@
       const snapshot = await api('/api/models');
       if (!dlg.isConnected) return;
       update(snapshot, true);
+      if (opts?.plan) q('.st-plan').scrollIntoView({ block: 'nearest' });
+      if (data.chatgpt?.pending) watchPlan().catch(() => {});
       if (opts && opts.add) { const p = data.presets[0]; form = { preset: p.id, name: '', base: p.base }; render(); }
       if (opts && opts.minted) {
         const p = data.presets.find((x) => x.id === 'openrouter');

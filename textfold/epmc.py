@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .web_requests import PUBLIC
 from . import jats, local, store
 from .fetch import UA, urlread
 
@@ -36,7 +37,7 @@ def ref_of(ref):
 
 
 def _get(url, timeout=60):
-    return urlread(urllib.request.Request(url, headers=UA), timeout)[0]
+    return urlread(urllib.request.Request(url, headers=UA), timeout, open_url=PUBLIC.open)[0]
 
 
 def by_doi(doi):
@@ -53,7 +54,7 @@ def by_doi(doi):
 def image_resolver(pid, folder):
     """Absolute image URLs (PubMed Central's CDN) as they are; a preprint's figure (a bare file name) from Europe PMC's
     file service."""
-    images = local.Images(folder, None)
+    images = local.Images(folder, None, open_url=PUBLIC.open)
 
     def resolve(src):
         if pid.startswith("ppr") and not re.match(r"https?://", src):

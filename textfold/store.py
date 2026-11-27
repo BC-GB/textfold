@@ -76,9 +76,10 @@ def app_data():
 # the reader's papers and exports: the project folder when run from it, the system's data folder when installed with
 # pip, or the folder TEXTFOLD_DATA names (the desktop app's; PAPERFOLD_DATA, its name before TextFold, is still read)
 DATA = Path(os.environ.get("TEXTFOLD_DATA") or os.environ.get("PAPERFOLD_DATA") or (ROOT if SOURCE else app_data()))
-HOME = Path.home() / ".textfold"   # the reader's settings and keys, outside the project folder
+_settings_dir = os.environ.get("TEXTFOLD_SETTINGS_DIR")
+HOME = Path(_settings_dir).expanduser() if _settings_dir else Path.home() / ".textfold"
 # where they were kept under earlier names, newest first: PaperFold, Dynamic Reader (read, never removed)
-OLD_HOMES = (Path.home() / ".paperfold", Path.home() / ".dynamic-reader")
+OLD_HOMES = () if _settings_dir else (Path.home() / ".paperfold", Path.home() / ".dynamic-reader")
 
 
 # a paper's id: an arXiv id; or, stored when it was first opened, a document from this computer (local.py:

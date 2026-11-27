@@ -27,6 +27,7 @@ jobs:
           path: dist/
 
   publish:
+    if: github.repository == 'chenxiachan/textfold'
     needs: build
     runs-on: ubuntu-latest
     environment: pypi

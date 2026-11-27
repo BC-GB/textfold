@@ -8,6 +8,7 @@
 // repository itself. textfold:// links open a document of the library in the window (links.js).
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, session, shell } = require('electron');
 const { execFile, spawn } = require('child_process');
+const { createHmac, randomBytes } = require('crypto');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -24,6 +25,7 @@ const PYTHON = PACKED ? BUNDLED : WIN ? 'python' : 'python3';
 const CODE = PACKED ? path.join(PAYLOAD, 'app') : path.join(__dirname, '..');
 
 let server = null;
+let accessKey = null;
 let win = null;
 let base = null;      // the server's address, once it answers
 let waiting = null;   // a link that came before that: the last one, opened then
@@ -70,7 +72,7 @@ const MISSING = { en: 'This link names a document that is not in the library.', 
   hi: 'यह लिंक जिस दस्तावेज़ का है, वह सूची में नहीं है।' };
 async function inLibrary(id) {
   try {
-    const r = await fetch(`${base}/api/papers`);
+    const r = await fetch(`${base}/api/papers`, { headers: { Authorization: `Bearer ${accessKey}` }, redirect: 'error' });
     return !r.ok || (await r.json()).some((p) => p.id === id);
   } catch {
     return true;   // (no answer: the page says so itself)
@@ -97,7 +99,7 @@ async function go() {
   }
 }
 
-// a free port from a quiet base, so a server run by hand on 3017 is never in the way
+// Keep the renderer's origin stable across starts so Chromium keeps the reader's preferences.
 function freePort(start = 31917) {
   return new Promise((resolve) => {
     const probe = net.createServer();
@@ -122,15 +124,21 @@ function heard(chunk) {
   if (win && !win.isDestroyed()) win.webContents.executeJavaScript(`document.querySelector('.note').textContent = ${JSON.stringify(inLocale(COPYING))}`).catch(() => {});
 }
 
-async function waitReady(port, tries = 160) {
+async function waitReady(process, secret, tries = 160) {
+  const announcement = path.join(app.getPath('userData'), 'server.json');
   for (let i = 0; i < tries || (copying && server); i++) {
+    if (server !== process) return null;
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/models`);
-      if (r.ok) return true;
+      const record = JSON.parse(await fs.promises.readFile(announcement, 'utf8'));
+      const url = `http://127.0.0.1:${record.port}`;
+      if (record.pid === process.pid && Number.isInteger(record.port) && record.port > 0 && record.port <= 65535 && record.url === url) {
+        const expected = createHmac('sha256', secret).update(`${record.pid}:${url}`).digest('hex');
+        if (record.proof === expected && server === process) return url;
+      }
     } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 250));
   }
-  return false;
+  return null;
 }
 
 // the log's lines, each with when it was written (the computer's time, to the second): a report then says when
@@ -171,7 +179,7 @@ function stopServer() {
   });
 }
 
-function startServer(port) {
+function startServer(port, secret) {
   // A GUI app starts with a bare PATH: the usual install places are added so that the server finds node and npx
   // (the ChatGPT bridge) at once; on a Mac it also asks the login shell for the agents' places (textfold/agents.py).
   const home = app.getPath('home');
@@ -194,12 +202,16 @@ function startServer(port) {
   const log = fs.createWriteStream(path.join(app.getPath('userData'), 'server.log'), { flags: 'a' });
   log.write(`${stamp()} TextFold ${app.getVersion()} starts (${process.platform} ${process.arch})\n`);
   // (windowsHide: no console window beside the app's own)
-  server = spawn(PYTHON, ['-s', '-u', '-m', 'textfold', 'serve', '--port', String(port)], { cwd: CODE, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  server = spawn(PYTHON, ['-s', '-u', '-m', 'textfold', 'serve', '--port', String(port)], {
+    cwd: CODE, env: { ...env, TEXTFOLD_LOCAL_ACCESS: secret }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  });
   server.stdout.pipe(stamped()).pipe(log, { end: false });
   server.stderr.pipe(stamped()).pipe(log, { end: false });
   server.stdout.on('data', heard);
-  server.on('exit', (code) => { server = null; if (code && win && !win.isDestroyed()) win.webContents.send?.('server-exit', code); });
+  server.on('exit', (code) => { base = null; accessKey = null; server = null; if (code && win && !win.isDestroyed()) win.webContents.send?.('server-exit', code); });
+  server.on('error', () => { base = null; accessKey = null; server = null; });
   registerHost(env, log);
+  return server;
 }
 
 // The browser's button (extension/) reaches TextFold through its native messaging host, which each start registers
@@ -225,34 +237,98 @@ async function open() {
   win.loadFile(path.join(__dirname, 'splash.html'));
   // full screen, from View › Toggle Full Screen or the reader's Aa: the page told when it changes (its button's name)
   for (const ev of ['enter-full-screen', 'leave-full-screen']) win.on(ev, () => win.webContents.send('fullscreen', win.isFullScreen()));
-  const local = (url) => /^http:\/\/(127\.0\.0\.1|localhost):\d+\//.test(url);
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-  win.webContents.on('will-navigate', (e, url) => {
-    if (local(url) || url.startsWith('file:')) return;
+  const navigate = (e, legacyUrl) => {
+    const url = e.url ?? legacyUrl;
+    if (links.isReaderPage(url, base)) return;
     e.preventDefault();
     if (/^https?:/.test(url)) shell.openExternal(url);
+  };
+  win.webContents.on('will-navigate', navigate);
+  win.webContents.on('will-redirect', (e, url, _inPlace, mainFrame) => {
+    if (e.isMainFrame ?? mainFrame) navigate(e, url);
   });
 
-  const port = await freePort();
-  startServer(port);
-  if (!(await waitReady(port))) {
+  const secret = randomBytes(32).toString('hex');
+  const child = startServer(await freePort(), secret);
+  const address = await waitReady(child, secret);
+  if (!address || server !== child) {
     const where = path.join(app.getPath('userData'), 'server.log');
     win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<pre style="font:14px -apple-system,'Segoe UI',sans-serif;padding:24px;white-space:pre-wrap">TextFold could not start its server.\n\nThe log is in ${where}</pre>`)}`);
     return;
   }
-  base = `http://127.0.0.1:${port}`;
+  base = address;
+  accessKey = secret;
+  win.webContents.session.webRequest.onBeforeSendHeaders({ urls: ['http://127.0.0.1/*'] }, (event, done) => {
+    const requestHeaders = event.requestHeaders;
+    if (accessKey && new URL(event.url).origin === base &&
+        (event.webContentsId == null || event.webContentsId === win?.webContents.id)) {
+      requestHeaders.Authorization = `Bearer ${accessKey}`;
+    }
+    done({ requestHeaders });
+  });
   if (waiting) go();
   else win.loadURL(`${base}/`);
 }
 
-ipcMain.handle('open-external', (_e, url) => (/^https?:/.test(url) ? shell.openExternal(url) : null));
+function handleReader(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!win || win.isDestroyed() || event.sender !== win.webContents ||
+        event.senderFrame !== win.webContents.mainFrame || !links.isReaderPage(event.senderFrame?.url, base)) {
+      throw new Error('This action needs an open TextFold reader.');
+    }
+    return handler(event, ...args);
+  });
+}
+
+handleReader('open-external', (_e, url) => (/^https?:/.test(url) ? shell.openExternal(url) : null));
+function runLocalApproval(args, value) {
+  return new Promise((resolve) => {
+    const p = spawn(PYTHON, ['-s', '-X', 'utf8', '-m', 'textfold', ...args], {
+      cwd: CODE, env: { ...process.env, TEXTFOLD_DATA: app.getPath('userData') },
+      stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true,
+    });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+    p.stdin.on('error', () => resolve(false));
+    p.stdin.end(value + '\n', 'utf8');
+  });
+}
+
+handleReader('agent:approve', async (_e, command) => {
+  if (typeof command !== 'string' || !command || command.length > 2048 || /[\r\n\0]/.test(command)) return false;
+  const selection = await dialog.showMessageBox(win, {
+    type: 'warning', buttons: ['Cancel', 'Allow command'], defaultId: 0, cancelId: 0,
+    message: 'Allow this custom agent command in TextFold?', detail: command,
+  });
+  return selection.response === 1 && runLocalApproval(['approve-local-agent'], command);
+});
+const FOLDER_ACTIONS = new Map([
+  ['library-copy', 'Copy the TextFold library to this folder on restart?'],
+  ['library-existing', 'Open the TextFold library from this folder on restart?'],
+  ['engine-install', 'Use this folder for the TextFold PDF engine?'],
+]);
+handleReader('storage:approve-folder', async (_e, action, folder) => {
+  if (!FOLDER_ACTIONS.has(action) || typeof folder !== 'string' || folder.length > 32768 || /[\p{C}]/u.test(folder)) {
+    throw new Error('Enter a folder path on one line.');
+  }
+  const selection = await dialog.showMessageBox(win, {
+    type: 'question', buttons: ['Cancel', 'Use this folder'], defaultId: 0, cancelId: 0,
+    message: FOLDER_ACTIONS.get(action), detail: folder,
+  });
+  if (selection.response !== 1) return false;
+  if (!await runLocalApproval(['approve-local-folder', action], folder)) {
+    throw new Error('TextFold could not approve this folder. Choose an absolute path and try again.');
+  }
+  return true;
+});
 // a file the reader saves (a page, its notes, a figure's picture): where it goes, they choose in the system's own
 // dialog; the path, or null. A page is text, a picture its bytes
 const KINDS = { html: 'Web page', md: 'Markdown', json: 'JSON', png: 'PNG image', jpg: 'JPEG image', gif: 'GIF image', webp: 'WebP image', svg: 'SVG image' };
-ipcMain.handle('save-file', async (e, name, data) => {
+handleReader('save-file', async (e, name, data) => {
   const ext = path.extname(String(name)).slice(1).toLowerCase();
   if (!KINDS[ext]) return null;
   const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
@@ -265,7 +341,7 @@ ipcMain.handle('save-file', async (e, name, data) => {
 });
 // the folder the library is to go to, or the library to open (Settings: textfold/storage_settings.py), in the system's
 // own dialog: its path, or null
-ipcMain.handle('storage:choose-folder', async (e) => {
+handleReader('storage:choose-folder', async (e) => {
   const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { title: 'TextFold', properties: ['openDirectory', 'createDirectory'] });
   return r.canceled ? null : r.filePaths[0] || null;
 });
@@ -284,7 +360,7 @@ function tell(s) {
 function answer(s) {
   if (win && !win.isDestroyed()) win.webContents.send('update', { ...s, transient: true });
 }
-const REPO = 'https://github.com/chenxiachan/textfold';
+const REPO = 'https://github.com/BC-GB/textfold';
 // The first launch after an update: what the update left is cleared (the page says what is new: news.py). A first
 // install has nothing to clear: the version it records is the next one's "was".
 function updatedFrom() {
@@ -310,19 +386,19 @@ function dropDownloaded(again = true) {
     if (dir && again) setTimeout(() => dropDownloaded(false), 60 * 1000);
   }
 }
-ipcMain.handle('app:version', () => app.getVersion());
-ipcMain.handle('window:fullscreen', (e, on) => {   // on: true or false; nothing: only whether it is
+handleReader('app:version', () => app.getVersion());
+handleReader('window:fullscreen', (e, on) => {   // on: true or false; nothing: only whether it is
   const w = BrowserWindow.fromWebContents(e.sender);
   if (w && typeof on === 'boolean') w.setFullScreen(on);
   return Boolean(w && w.isFullScreen());
 });
-ipcMain.handle('update:state', () => (update && !update.dismissed ? update : null));
-ipcMain.handle('update:dismiss', () => { if (update) update.dismissed = true; });
+handleReader('update:state', () => (update && !update.dismissed ? update : null));
+handleReader('update:dismiss', () => { if (update) update.dismissed = true; });
 function setupUpdates() {
   let updater;
   try { ({ autoUpdater: updater } = require('electron-updater')); } catch { updater = null; }
   if (!app.isPackaged || !updater) {
-    ipcMain.handle('update:check', () => ({ kind: 'dev' }));
+    handleReader('update:check', () => ({ kind: 'dev' }));
     menu(async () => ({ kind: 'dev' }));
     return;
   }
@@ -363,9 +439,9 @@ function setupUpdates() {
       return { kind: 'check-failed' };
     }
   };
-  ipcMain.handle('update:check', byHand);
+  handleReader('update:check', byHand);
   menu(byHand);
-  ipcMain.handle('update:download', () => {
+  handleReader('update:download', () => {
     if (!update || !['available', 'failed'].includes(update.kind)) return;
     tell({ kind: 'downloading', version: update.version, percent: 0 });
     updater.downloadUpdate().catch(() => {
@@ -373,7 +449,7 @@ function setupUpdates() {
       tell({ kind: 'failed', version: update.version });
     });
   });
-  ipcMain.handle('update:install', async () => {
+  handleReader('update:install', async () => {
     if (!update || update.kind !== 'ready') return;
     await stopServer();   // (Windows: the installer replaces the bundled Python, which must not be running)
     updater.quitAndInstall(true, true);   // on Windows silently, and the new version opens

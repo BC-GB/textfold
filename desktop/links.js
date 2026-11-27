@@ -26,6 +26,18 @@ function validId(id) {
   return ARXIV.test(id) || (IMPORTED.test(id) && id.length <= 80);
 }
 
+// Only TextFold's application pages on this window's own server use the native desktop bridge.
+function isReaderPage(address, base) {
+  try {
+    const url = new URL(address);
+    if (url.origin !== base || url.username || url.password) return false;
+    return url.pathname === '/' || url.pathname === '/notes' ||
+      (url.pathname.startsWith('/p/') && validId(url.pathname.slice(3)));
+  } catch {
+    return false;
+  }
+}
+
 const CHECK = {
   paper: validId,
   u: (v) => PART.test(v),
@@ -74,4 +86,4 @@ function fromArgv(argv) {
   return (argv || []).find((a) => typeof a === 'string' && /^textfold:/i.test(a)) || null;
 }
 
-module.exports = { parse, readerUrl, fromArgv, validId, ARXIV_ID, IMPORTED_ID, LEVELS, LANGS };
+module.exports = { parse, readerUrl, fromArgv, validId, isReaderPage, ARXIV_ID, IMPORTED_ID, LEVELS, LANGS };

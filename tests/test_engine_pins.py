@@ -30,7 +30,7 @@ class Pins(unittest.TestCase):
     def setUp(self):
         t = tempfile.TemporaryDirectory()
         self.addCleanup(t.cleanup)
-        self.e = Path(t.name) / "engine"
+        self.e = Path(t.name).resolve() / "engine"
 
     def test_a_new_engine_installs_them_pinned_and_says_so(self):
         with mock.patch.object(engine, "target", return_value=self.e), mock.patch.object(engine, "_record"), \

@@ -17,7 +17,7 @@ from unittest import mock
 
 from PIL import Image
 
-from textfold import fetch, local, picture
+from textfold import build, fetch, local, picture, store
 
 
 def photo(w, h, mode="RGB", fmt="PNG", **kw):
@@ -84,7 +84,7 @@ class Ways(unittest.TestCase):
     def test_arxiv_figures(self):
         calls = []
 
-        def get(url):
+        def get(url, *, limit, budget):
             calls.append(url)
             return self.big, url
         self.img.mkdir()
@@ -108,6 +108,60 @@ class Ways(unittest.TestCase):
         self.assertEqual(images.resolve(small), "img/02-image.png")
         with Image.open(self.img / "01-image.png.webp") as im:
             self.assertEqual(im.format, "WEBP")
+
+    def test_local_figures_stay_with_the_selected_document(self):
+        root = Path(self.tmp.name)
+        folder = root / "report"
+        panels = folder / "panels"
+        panels.mkdir(parents=True)
+        for f in (folder / "cover.png", panels / "Panel A.png", root / "other.png"):
+            Image.new("RGB", (3, 3), "blue").save(f)
+        images = local.Images(self.img, folder)
+        self.assertEqual(images.resolve("cover.png"), "img/01-cover.png")
+        self.assertEqual(images.resolve("panels/Panel%20A.png#preview"), "img/02-Panel_A.png")
+        for ref in ("../other.png", (root / "other.png").as_posix()):
+            self.assertIsNone(images.resolve(ref))
+        self.assertEqual(sorted(p.name for p in self.img.iterdir()), ["01-cover.png", "02-Panel_A.png"])
+
+    def test_a_linked_image_is_resolved_within_the_document_folder(self):
+        root = Path(self.tmp.name)
+        folder = root / "report"
+        folder.mkdir()
+        for f in (folder / "cover.png", root / "appendix.png"):
+            Image.new("RGB", (3, 3), "blue").save(f)
+        try:
+            (folder / "cover-link.png").symlink_to(folder / "cover.png")
+            (folder / "appendix-link.png").symlink_to(root / "appendix.png")
+        except OSError as error:
+            self.skipTest(f"symbolic links unavailable: {error}")
+        images = local.Images(self.img, folder)
+        self.assertEqual(images.resolve("cover-link.png"), "img/01-cover.png")
+        self.assertIsNone(images.resolve("appendix-link.png"))
+
+    def test_missing_figures_only_use_web_urls(self):
+        with mock.patch.object(fetch, "get", side_effect=AssertionError("unexpected download")):
+            sources = ["img/absent.png", "urn:example:plot", (self.img / "chart.png").as_uri()]
+            self.assertEqual(fetch.fetch_images(sources, "", self.img), {})
+
+    def test_inline_and_missing_figures_are_resolved_in_exported_text(self):
+        with mock.patch.object(store, "DATA", Path(self.tmp.name)):
+            pid = local.import_text("A note about the illustration.", "notes.md")
+            doc = store.assemble(pid)
+            src = "https://example.org/chart.png?a=1&b=2"
+            doc["images"] = [src, "img/missing.png"]
+            atom = {"html": '<a href="https://example.org"><img src="https://example.org/chart.png?a=1&amp;b=2"></a>'}
+            doc["atoms"]["panel"] = atom
+            block = {"k": "fig", "html": '<img alt="Caption" src="img/missing.png">'}
+            doc["blocks"].append(block)
+            cache = store.pdir(pid) / "img"
+            cache.mkdir(exist_ok=True)
+            Image.new("RGB", (3, 3), "blue").save(cache / "panel.png")
+            with mock.patch.object(build, "fetch_images", return_value={src: "img/panel.png"}):
+                build.inline_images(doc)
+            self.assertIn('src="data:image/webp;base64,', atom["html"])
+            self.assertIn('href="https://example.org"', atom["html"])
+            self.assertNotIn("src=", block["html"])
+            self.assertIn('alt="Caption"', block["html"])
 
 
 if __name__ == "__main__":

@@ -36,6 +36,10 @@ A copy run from the code never claims it; a link on its command line still opens
 
 ## Build
 
+The pull request's **Verify Windows installer** workflow builds Windows x64 with hash-locked Python wheels. It publishes
+a test artifact after installing and exercising the app on a Windows runner. Its provenance file records the commit,
+installer hash, and signature status.
+
 ```bash
 cd desktop
 npm install
@@ -45,10 +49,16 @@ npm run dist:mac:x64  # Intel, on an Intel Mac or on Apple silicon (its Python r
 npm run dist:win      # Windows, on Windows: the setup .exe
 ```
 
-`npm run payload` (run by each) downloads a standalone CPython 3.12 for the system (python-build-standalone),
-installs `requirements.txt` into it and copies `textfold/` (the reader's pages inside it) beside it, in
+`npm run payload` downloads the hash-verified standalone CPython 3.12 for the target and installs the wheels
+in its platform lockfile. Intel Mac builds compile the pinned cryptography and OpenSSL sources with Xcode
+command-line tools and the Rust `x86_64-apple-darwin` target. The build copies `textfold/` beside Python in
 `desktop/payload/`. Build outside a synced folder (Dropbox, iCloud Drive), or have it skip `desktop/node_modules`,
 `desktop/payload` and `desktop/out` (several hundred MB).
+
+The build checks the CPython archive's SHA-256 before extraction. The release and hashes for all three targets
+are pinned in `scripts/python-archive.mjs`. To refresh them, check the new Astral release's `SHA256SUMS` and
+update the pins in the same change. A custom HTTPS archive requires both `PBS_URL` and an independently
+verified `PBS_SHA256`. Its interpreter must meet the pinned minimum patch version in the same Python series.
 
 Before it ships, that Python runs TextFold's tests, reads a Markdown, an HTML and a CSV file without a model, and
 serves the reader with them listed:
@@ -60,14 +70,18 @@ payload/python/bin/python3 scripts/smoke.py      # payload\python\python.exe scr
 ## Releases
 
 `.github/workflows/desktop.yml` builds the three on their own systems (macos-15, macos-15-intel, windows-latest) when a
-version is tagged, as `publish.yml` sends the package to PyPI. They go into a draft release, published once all three
-have succeeded, with the files the apps update from: `latest.yml`, and one `latest-mac.yml` for both Macs
+version is tagged. The installers go into a draft release, published once all three have succeeded. The release includes
+`latest.yml` and one `latest-mac.yml` for both Macs
 (`scripts/latest-mac.py`, since each Mac's build writes its own). The tag, `textfold/__init__.py` and this folder's
 `package.json` name the same version, or nothing is built. Run by hand (Actions › desktop › Run workflow), the files
 are the run's artifacts, and a version may be given to the app alone: two such builds, an older and a newer, try an
 update from one to the other.
 
+`publish.yml` builds a Python distribution for each tag. Its PyPI upload uses the trusted publisher on `chenxiachan/textfold`.
+
 ## Signing and notarization
+
+The GitHub workflow builds and tests the Python payload on a separate runner before the macOS packaging step receives signing credentials.
 
 The Developer ID certificate and the Apple account are the ones ThoughtDAG's desktop build uses; nothing is tied
 to one app. The repository's secrets:

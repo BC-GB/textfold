@@ -64,7 +64,15 @@ class Commands(unittest.TestCase):
         self.assertNotIn("--search", off)
         self.assertLess(on.index("--search"), on.index("exec"))   # (a flag of codex itself, before exec)
         for cmd in (off, on):
-            self.assertEqual(cmd[cmd.index("-s") + 1], "read-only")
+            self.assertIn("--strict-config", cmd)
+            self.assertIn("--ignore-user-config", cmd)
+            self.assertIn("features.shell_tool=false", cmd)
+            self.assertIn("features.goals=false", cmd)
+            self.assertIn('default_permissions="textfold-document"', cmd)
+            self.assertIn('permissions.textfold-document.filesystem={":workspace_roots"="read"}', cmd)
+            self.assertIn('permissions.textfold-document.network.enabled=false', cmd)
+        self.assertIn('web_search="disabled"', off)
+        self.assertNotIn('web_search="disabled"', on)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", on)
 
     def test_pi(self):
@@ -85,9 +93,9 @@ class Commands(unittest.TestCase):
 
 class Switch(unittest.TestCase):
     def spec(self, kind, on):
-        with mock.patch.object(models, "ask_choice", lambda s=None, cat=None: (None, None)), \
-             mock.patch.object(models, "resolve", lambda m, s=None: {"kind": kind, "id": "x", "runtime": "codex", "model": "m"}):
-            return models.ask_spec(models.load_settings(), tools=on)
+        with mock.patch.object(models, "catalog", return_value=([{"id": "x", "target": "saved", "kind": kind}], [])), \
+             mock.patch.object(models, "_resolve", return_value={"kind": kind, "id": "x", "runtime": "codex", "model": "m"}):
+            return models.ask_spec({"model": "x", "model_target": "saved"}, tools=on)
 
     def test_only_an_agent_and_only_when_asked(self):
         self.assertTrue(self.spec("agent", True).get("tools"))

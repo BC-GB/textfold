@@ -377,7 +377,7 @@
   function textHtml(uid, L) {
     const pcs = pieces(uid, L);
     let html = '', run = null, buf = '';
-    const flush = () => { if (buf) html += run ? `<span class="${run}">${buf}</span>` : buf; buf = ''; };
+    const flush = () => { if (buf) html += run ? `<span class="${esc(run)}">${buf}</span>` : buf; buf = ''; };
     pcs.forEach((p, n) => {
       const t = p.tok || {};
       const cls = p.gap ? 'tr gap' : `tr${p.lead ? ' lead' : ''}${p.kept ? ' kept' : ''}${t.f ? ' ' + t.f : ''}${hlCls(p)}${fdCls(p)}${p.rv !== undefined ? rvCls({ rv: p.rv }) : ''}`;
@@ -1851,18 +1851,28 @@
   function embeds(fb) {
     for (const a of fb.querySelectorAll('a.pf-embed')) {
       if (!framable(a.href)) continue;
-      const box = h('div', 'embed'), fr = document.createElement('iframe');
-      fr.src = a.href;
-      fr.title = a.title || a.textContent.trim();
-      fr.loading = 'lazy';
-      fr.referrerPolicy = 'no-referrer';
-      fr.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms');
-      fr.setAttribute('allow', 'fullscreen');
-      fr.style.height = `${Math.max(160, Math.min(1400, +((a.className.match(/\bpf-h-(\d+)\b/) || [])[1] || 480)))}px`;
-      const bar = h('div', 'embed-bar');
-      bar.innerHTML = `<span>${esc(T[ui].embed_live)}</span><a href="${esc(a.href)}" target="_blank" rel="noopener">${esc(T[ui].embed_open)} ↗</a>`;
-      box.append(fr, bar);
+      const box = h('div', 'embed'), bar = h('div', 'embed-bar');
+      const load = h('button', 'embed-load'), separate = h('a'), source = new URL(a.href);
+      load.type = 'button';
+      load.textContent = [T[ui].embed_load, source.host].join(' · ');
+      separate.href = source.href;
+      separate.target = '_blank';
+      separate.rel = 'noopener noreferrer';
+      separate.textContent = T[ui].embed_open + ' ↗';
+      bar.append(load, separate);
+      box.append(bar);
       a.replaceWith(box);
+      load.addEventListener('click', () => {
+        const fr = document.createElement('iframe');
+        fr.title = a.title || a.textContent.trim();
+        fr.referrerPolicy = 'no-referrer';
+        fr.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms');
+        fr.setAttribute('allow', 'fullscreen');
+        fr.style.height = `${Math.max(160, Math.min(1400, +((a.className.match(/\bpf-h-(\d+)\b/) || [])[1] || 480)))}px`;
+        fr.src = source.href;
+        box.prepend(fr);
+        load.replaceWith(document.createTextNode(T[ui].embed_live));
+      }, { once: true });
     }
   }
 
@@ -2135,7 +2145,7 @@
   const notesOf = new Map();   // uid -> its notes
   let keepMine = store.get('dr-keep-mine') === '1';   // "keep my highlights" (a viewer's preference: kept in this browser)
   const NOTES_KEY = `dr-notes:${D.meta.id}${D.saved ? ':' + D.saved : ''}`;
-  const post = (path, body, signal) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal })
+  const post = (path, body, signal) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...window.DRChatGPTHeaders?.(path) }, body: JSON.stringify(body), signal })
     .then((r) => r.json().then((d) => (r.ok ? d : Promise.reject(new Error(d.error || r.status)))));
   const noteId = () => 'n-' + Math.random().toString(36).slice(2, 10);
   // a note's target: a paragraph (its id), a section ("§" and its id: its one-line summary, or its title), or the

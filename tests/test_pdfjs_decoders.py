@@ -6,6 +6,7 @@ written into a saved page that carries its PDF.
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import AUTH, KEY
 import base64
 import http.client
 import json
@@ -60,7 +61,7 @@ class Saved(unittest.TestCase):
         server.PAGES.clear()
         self.addCleanup(server.PAGES.clear)
         self.pid = local.import_text("# A scan\n\nA paragraph read from a scanned page.\n")
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(Jobs()))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(Jobs(), KEY))
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
@@ -68,7 +69,7 @@ class Saved(unittest.TestCase):
     def test_a_saved_page_with_its_pdf_carries_them(self):
         c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_port, timeout=20)
         c.request("POST", "/api/export", json.dumps({"paper": self.pid, "pdf": True}),
-                  headers={"Host": "localhost", "Content-Type": "application/json"})
+                  headers={**AUTH, "Host": "localhost", "Content-Type": "application/json"})
         r = c.getresponse()
         html = r.read().decode("utf-8")
         c.close()

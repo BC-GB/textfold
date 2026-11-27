@@ -44,5 +44,10 @@ stores take (dist/textfold-extension-<version>.zip): this folder without README.
 - `nativeMessaging`: to hand the page to TextFold through the browser. No port is opened on this computer, and only
   the extensions TextFold lets in can reach it.
 
-Your cookies stay in the browser: what is sent is the page as it was drawn. It goes to your library on this computer
-and nowhere else. TextFold writes its levels with the model you chose in its settings, as for any other document.
+Clicking the button saves the page address and an HTML snapshot in your TextFold library. This can include private
+article text, hidden notes, and content from frames your browser lets the extension read. The extension omits text-field
+values, password fields and drafts in editable regions. It does not request cookie access.
+
+TextFold can fetch the article's images from their source sites. If a model is configured and the reader is running,
+TextFold sends the article text needed to generate its reading levels to that model. A hosted model processes that text
+outside your computer.

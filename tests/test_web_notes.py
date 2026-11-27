@@ -41,7 +41,7 @@ class Notes(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(tmp.cleanup)
         url = "https://example.org/neurons"
-        with mock.patch.object(store, "DATA", Path(tmp.name)), mock.patch.object(webpage, "_get", lambda u: (PAGE.encode(), url, "utf-8")):
+        with mock.patch.object(store, "DATA", Path(tmp.name)), mock.patch.object(webpage, "_get", lambda u, requests: (PAGE.encode(), url, "utf-8")):
             pid = webpage.register(url)
             webpage.fetch(pid)
             d = store.pdir(pid)

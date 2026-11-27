@@ -5,6 +5,7 @@ manifest, which lets only the extensions named reach it.
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY
 import base64
 import io
 import json
@@ -17,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from textfold import capture, semantic, store, webpage
+from textfold import capture, local_access, semantic, store, webpage
 
 WORDS = ("The river office kept the gauges for a century, and its records show how the spring floods rose and fell "
          "with the snow on the hills, year after year, in the same slow rhythm the town still lives by. ")
@@ -53,7 +54,7 @@ class Receive(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.data = Path(tmp.name)
-        for p in (mock.patch.object(store, "DATA", self.data), mock.patch("textfold.local.prefetch", lambda srcs: {})):
+        for p in (mock.patch.object(store, "DATA", self.data), mock.patch("textfold.local.prefetch", lambda srcs, **kw: {})):
             p.start()
             self.addCleanup(p.stop)
 
@@ -89,7 +90,7 @@ class Receive(unittest.TestCase):
         self.assertEqual(json.loads((store.pdir(pid) / "meta.json").read_text(encoding="utf-8"))["title"], "What the tab said")
 
     def test_the_reader_opens_where_textfold_runs(self):
-        (self.data / "server.json").write_text(json.dumps({"format": "textfold/server", "url": "http://127.0.0.1:4100", "pid": os.getpid()}))
+        local_access.publish(self.data, {"url": "http://127.0.0.1:4100", "pid": os.getpid()}, KEY)
         r = capture.receive(SNAP)
         self.assertEqual(r["open"], f"http://127.0.0.1:4100/p/{r['paper']}")
         (self.data / "server.json").write_text(json.dumps({"url": "http://127.0.0.1:4100", "pid": 2 ** 22 + 12345}))   # (gone)
@@ -126,14 +127,20 @@ class ReadingView(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.data = Path(tmp.name)
         for p in (mock.patch.object(store, "DATA", self.data),
-                  mock.patch("textfold.local.prefetch", lambda srcs: {s: (PNG, "fig1.png") for s in srcs})):
+                  mock.patch("textfold.local.prefetch", lambda srcs, **kw: {s: (PNG, "fig1.png") for s in srcs})):
             p.start()
             self.addCleanup(p.stop)
+
+    def test_running_reader_announcement_only_names_its_local_http_port(self):
+        for url in ("https://example.org", "http://127.0.0.1:3017/notes", "http://127.0.0.1:0"):
+            with self.subTest(url=url):
+                (self.data / "server.json").write_text(json.dumps({"url": url, "pid": os.getpid()}), encoding="utf-8")
+                self.assertIsNone(capture._server_url())
 
     @unittest.skipUnless(os.name == 'nt', 'Windows process liveness must not send a signal')
     def test_server_liveness_never_signals_the_running_windows_process(self):
         url = 'http://127.0.0.1:12345'
-        (self.data / 'server.json').write_text(json.dumps({'url': url, 'pid': os.getpid()}), encoding='utf-8')
+        local_access.publish(self.data, {"url": url, "pid": os.getpid()}, KEY)
         with mock.patch.object(os, 'kill', side_effect=AssertionError('signal sent by a liveness probe')):
             self.assertEqual(capture._server_url(), url)
 
@@ -157,6 +164,50 @@ class ReadingView(unittest.TestCase):
         self.assertIn("[2]", doc)
         self.assertIn("ltx_role_footnote", doc)   # (Defuddle's footnote, in its sentence)
         self.assertIn("The gauges at the river office.", doc)
+
+    def test_hidden_reading_view_words_do_not_count_or_survive(self):
+        shown = " ".join(f"shown{k}" for k in range(90))
+        hidden = " ".join(f"MODEL-INSTRUCTION-{k}" for k in range(100))
+        cases = ('style="font-size:0"', 'data-tf-zero-size="1"', 'data-tf-css-hidden="1"',
+                 'class="sr-only"', 'aria-hidden="true"')
+        for attr in cases:
+            with self.subTest(attr=attr):
+                view = {"html": f"<p>{shown}<span {attr}>{hidden}</span></p>", "words": 190}
+                html, _ = webpage.read_view(view, PAGE, "https://press.example.org/rivers")
+                self.assertIn("shown89", html)
+                self.assertNotIn("MODEL-INSTRUCTION", html)
+
+        marked = {"html": f'<p><span>*</span><span data-tf-zero-size="1">{hidden}</span> {shown}</p>', "words": 191}
+        html, _ = webpage.read_view(marked, PAGE, "https://press.example.org/rivers")
+        self.assertNotIn("MODEL-INSTRUCTION", html)   # (zero-size words beside a mark do not become a footnote)
+
+        too_short = {"html": f'<p>{"shown " * 40}<span style="font-size:0">{hidden}</span></p>', "words": 140}
+        with self.assertRaisesRegex(ValueError, "web-notext"):
+            webpage.read_view(too_short, PAGE, "https://press.example.org/rivers")
+
+    def test_hidden_words_cannot_make_a_reading_candidate(self):
+        hidden = " ".join(f"MODEL-INSTRUCTION-{k}" for k in range(100))
+        poisoned = {"defuddle": {"html": f'<p>Subscribe.</p><p data-tf-css-hidden="1">{hidden}</p>',
+                                  "title": "Rivers", "words": 101}}
+        how, html, _, view, md = capture.reading_of(poisoned, PAGE, "https://press.example.org/rivers")
+        self.assertEqual(how, "textfold")
+        self.assertIsNone(view)
+        self.assertIsNotNone(md)
+        self.assertNotIn("MODEL-INSTRUCTION", html)
+
+    def test_fallback_compares_only_filtered_words(self):
+        defuddle = " ".join(f"defuddle{k}" for k in range(90))
+        readability = " ".join(f"readability{k}" for k in range(100))
+        hidden = " ".join(f"MODEL-INSTRUCTION-{k}" for k in range(100))
+        readings = {
+            "defuddle": {"html": f"<p>{defuddle}</p>", "words": 90},
+            "readability": {"html": f'<p>{readability}</p><p style="font-size:0">{hidden}</p>', "words": 200},
+        }
+        with mock.patch("textfold.adapt.choose", side_effect=RuntimeError("cannot compare")):
+            how, html, _, _, _ = capture.reading_of(readings, PAGE, "https://press.example.org/rivers")
+        self.assertEqual(how, "defuddle")
+        self.assertIn("defuddle89", html)
+        self.assertNotIn("MODEL-INSTRUCTION", html)
 
     def test_a_reference_list_taken_for_footnotes_stays_a_list(self):
         view = {"html": f'<p>{WORDS} {WORDS} As the gauges show <a href="#b0010">[2]</a>.</p><h2>References</h2>'
@@ -185,13 +236,18 @@ class ReadingView(unittest.TestCase):
         self.assertIn('<math display="block"><mi>z</mi></math>', html)
 
     def test_kept_from_the_reading_view(self):
-        r = capture.receive(dict(SNAP, html=PRESS, read=READ))
+        hidden = '<p style="font-size:0">MODEL-INSTRUCTION ' + ("hidden " * 100) + "</p>"
+        read = {**READ, "defuddle": {**READ["defuddle"], "html": VIEW + hidden, "words": 260}}
+        r = capture.receive(dict(SNAP, html=PRESS, read=read))
         d = store.pdir(r["paper"])
         meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual((meta["reader"], meta["title"]), ("defuddle", "Rivers"))
-        self.assertEqual((d / "article.html").read_text(encoding="utf-8"), VIEW)
+        article = (d / "article.html").read_text(encoding="utf-8")
+        self.assertNotIn("MODEL-INSTRUCTION", article)
+        self.assertIn("Abstract", article)
         self.assertFalse((d / "source.md").exists())
         html = (d / "source.html").read_text(encoding="utf-8")
+        self.assertNotIn("MODEL-INSTRUCTION", html)
         self.assertIn("ltx_role_footnote", html)
         self.assertIn('src="img/01-fig1.png"', html)
         self.assertIn("ltx_title", html)
@@ -218,6 +274,9 @@ class ReadingView(unittest.TestCase):
 
         class Server(BaseHTTPRequestHandler):
             def do_POST(self):
+                if self.headers.get("Authorization") != "Bearer " + KEY:
+                    self.send_error(401)
+                    return
                 asked.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
                 body = b'{"id": "job1"}'
                 self.send_response(200)
@@ -230,7 +289,7 @@ class ReadingView(unittest.TestCase):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), Server)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.shutdown)
-        (self.data / "server.json").write_text(json.dumps({"url": f"http://127.0.0.1:{srv.server_address[1]}", "pid": os.getpid()}))
+        local_access.publish(self.data, {"url": f"http://127.0.0.1:{srv.server_address[1]}", "pid": os.getpid()}, KEY)
         with mock.patch("textfold.models.load_settings", lambda: {"lang": "zh"}):
             r = capture.receive(dict(SNAP, read=READ))
             self.assertEqual(r["job"], "job1")

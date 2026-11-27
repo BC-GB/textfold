@@ -42,6 +42,15 @@ def touch(p, text="", mode=0o755):
 
 
 class WindowsAgents(unittest.TestCase):
+    def test_only_direct_agent_programs_can_receive_document_arguments_on_windows(self):
+        with mock.patch.object(agents, "WIN", True), mock.patch.object(agents.subprocess, "run") as start:
+            with self.assertRaisesRegex(RuntimeError, "native executable"):
+                agents.run([r"C:\fixture\wrapper.cmd", "--version"])
+            start.assert_not_called()
+            args = [r"C:\fixture\wrapper.exe", "--version"]
+            agents.run(args)
+            start.assert_called_once_with(args, input=None, timeout=None, shell=False)
+
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(self.dir, ignore_errors=True))

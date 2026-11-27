@@ -13,6 +13,31 @@ const dir = path.join(__dirname, '..', 'extension');
 const plain = (x) => JSON.parse(JSON.stringify(x));   // (from the extension's own context)
 const READING = { defuddle: { html: '<p>Top</p>', title: 'A', words: 120 }, notes: 0, errors: [] };
 
+function snapshotElement(tag, children = [], attrs = {}, computed = {}) {
+  const el = {
+    nodeType: 1, localName: tag, attributes: Object.entries(attrs).map(([name, value]) => ({ name, value })),
+    childNodes: [], shadowRoot: null, computed,
+    getAttribute: (name) => attrs[name] ?? null, hasAttribute: (name) => Object.hasOwn(attrs, name),
+  };
+  el.childNodes = children.map((child) => {
+    const node = typeof child === 'string' ? { nodeType: 3, data: child } : child;
+    node.parentElement = el;
+    node.parentNode = el;
+    return node;
+  });
+  return el;
+}
+
+function snapshotHtml(children) {
+  const head = snapshotElement('head');
+  const body = snapshotElement('body', children);
+  const html = snapshotElement('html', [head, body]);
+  const document = { documentElement: html, head, body, baseURI: 'https://a.example/p', title: 'A' };
+  const getComputedStyle = (el) => ({ display: 'block', visibility: 'visible', opacity: '1', fontSize: '16px', ...el.computed });
+  return vm.runInNewContext(fs.readFileSync(path.join(dir, 'snapshot.js'), 'utf8'),
+                            { document, getComputedStyle, location: { href: document.baseURI }, URL }).html;
+}
+
 // native: what TextFold's host does with a message (by default, keeps it)
 function background(readerFails, native) {
   const sent = [], badges = [], scripts = [], tabs = [], titles = [], installed = [];
@@ -54,6 +79,59 @@ test('the frames are put in their places and the page is sent to TextFold', asyn
   assert.match(msg.html, /data-tf-frame-src="https:\/\/a\.example\/inner\?a=1&amp;b=2"><p>Inside<\/p><\/div>/);
   assert.match(msg.html, /<!--TF-FRAME-1-->/);   // (a frame the tab did not let it into: its place, empty)
   assert.deepEqual(b.badges, ['…', '✓']);
+});
+
+test('the raw snapshot keeps article controls and omits private drafts and form state', () => {
+  const text = data => ({ nodeType: 3, data });
+  const element = (localName, attrs = {}, children = []) => ({
+    nodeType: 1, localName, type: attrs.type, childNodes: children,
+    isContentEditable: attrs.contenteditable === 'true',
+    attributes: Object.entries(attrs).map(([name, value]) => ({ name, value })),
+    hasAttribute: key => Object.hasOwn(attrs, key),
+    getAttribute: key => attrs[key] ?? null,
+  });
+  const document = {
+    documentElement: element('html'), title: 'Table', head: element('head', {}, [
+      element('meta', { name: 'csrf-token', content: 'private-meta' }),
+      element('meta', { property: 'og:title', content: 'Table of results' }),
+    ]),
+    body: element('body', {}, [
+      element('input', { type: 'hidden', value: 'private-hidden' }),
+      element('input', { type: 'text', value: 'private-field' }),
+      element('textarea', {}, [text('private-textarea')]),
+      element('div', { contenteditable: 'true' }, [text('private-editor')]),
+      element('button', { 'data-testid': 'result', 'data-token': 'private-token', value: 'private-id' }, [text('24%')]),
+      element('input', { type: 'button', value: 'Show result' }),
+    ]),
+  };
+  const result = vm.runInNewContext(fs.readFileSync(path.join(dir, 'snapshot.js'), 'utf8'), {
+    document, location: { href: 'https://example.org/table' }, getComputedStyle: () => ({}),
+  });
+  assert.doesNotMatch(result.html, /private-/);
+  assert.match(result.html, /data-testid="result">24%<\/button>/);
+  assert.match(result.html, /value="Show result"/);
+  assert.match(result.html, /content="Table of results"/);
+});
+
+test('computed zero-size text is marked while visible text survives', () => {
+  const inline = snapshotElement('span', ['inline hidden words'], { style: 'font-size:0' }, { fontSize: '0px' });
+  const stylesheet = snapshotElement('span', ['stylesheet hidden words'], { class: 'zero' }, { fontSize: '0px' });
+  const mixed = snapshotElement('div', ['hidden parent words', snapshotElement('span', ['Visible child'], {}, { fontSize: '16px' })],
+                                {}, { fontSize: '0px' });
+  const html = snapshotHtml([inline, stylesheet, mixed]);
+  assert.equal((html.match(/data-tf-zero-size="1"/g) || []).length, 3);
+  assert.match(html, /data-tf-zero-size="1">inline hidden words<\/span>/);
+  assert.match(html, /data-tf-zero-size="1">stylesheet hidden words<\/span>/);
+  assert.match(html, /data-tf-zero-size="1">hidden parent words<\/span><span>Visible child<\/span>/);
+});
+
+test('zero-size words in text-only elements are omitted', () => {
+  const html = snapshotHtml([
+    snapshotElement('option', ['hidden option words'], {}, { fontSize: '0px' }),
+    snapshotElement('textarea', ['hidden textarea words'], {}, { fontSize: '0px' }),
+  ]);
+  assert.doesNotMatch(html, /hidden (?:option|textarea) words/);
+  assert.doesNotMatch(html, /data-tf-zero-size/);
 });
 
 test('the readings are made in the top frame, on the snapshot sent, and sent with it', async () => {
@@ -135,6 +213,10 @@ test('kept, the button says where: in the library, and to open TextFold when it 
   await running.capture({ id: 3, index: 0 });
   assert.equal(running.titles.at(-1), 'already');
   assert.deepEqual(plain(running.tabs), [{ url: 'http://127.0.0.1:31917/p/web-a-example-1', index: 1 }]);
+  const other = background(false, () => ({ ok: true, paper: 'web-a-example-1', open: 'https://example.org/p/web-a-example-1' }));
+  await other.capture({ id: 3, index: 0 });
+  assert.deepEqual(other.tabs, []);
+  assert.equal(other.titles.at(-1), 'saved_closed');
   assert.equal(running.sent[0][1].version, 1);
 });
 

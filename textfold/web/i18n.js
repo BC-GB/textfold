@@ -628,6 +628,12 @@ window.DR_I18N = (() => {
       ['स्वचालित', 'बंद', 'न्यूनतम', 'कम', 'मध्यम', 'ऊँचा', 'बहुत ऊँचा', 'अधिकतम', 'अल्ट्रा']]),
   };
   for (const [code, words] of Object.entries(M)) Object.assign(S[code], words);
+  const modelChoice = {
+    en: "Choose a model", zh: "选择模型", "zh-Hant": "選擇模型", ja: "モデルを選択", ko: "모델 선택",
+    es: "Elegir un modelo", fr: "Choisir un modèle", de: "Modell auswählen", pt: "Escolher um modelo",
+    it: "Scegli un modello", ru: "Выбрать модель", hi: "मॉडल चुनें",
+  };
+  for (const [code, words] of Object.entries(modelChoice)) S[code].st_choose_model = words;
   // several files at once (app.js, addFiles): the upload under way, what came of them, why one was not taken
   const fls = (w) => ({ fl_adding: w[0], fl_added: w[1], fl_queue: w[2], fl_engine: w[3], fl_skipped: w[4], fl_no_model: w[5], fl_read: w[6] });
   const FL = {
@@ -875,18 +881,18 @@ window.DR_I18N = (() => {
   for (const [code, words] of Object.entries(TRFIX)) Object.assign(S[code], words);
   // an interactive figure of a web page, in its frame (reader.js, embeds): what it is, and its own page
   const EMBEDS = {
-    en: { embed_live: "Interactive, from its page", embed_open: "Open it on its own" },
-    zh: { embed_live: "交互图，来自原网页", embed_open: "单独打开" },
-    "zh-Hant": { embed_live: "互動圖，來自原網頁", embed_open: "單獨開啟" },
-    ja: { embed_live: "インタラクティブな図（元のページから）", embed_open: "単独で開く" },
-    ko: { embed_live: "인터랙티브 그림, 원래 페이지에서", embed_open: "따로 열기" },
-    es: { embed_live: "Interactiva, de su página", embed_open: "Abrirla aparte" },
-    fr: { embed_live: "Interactive, depuis sa page", embed_open: "L’ouvrir seule" },
-    de: { embed_live: "Interaktiv, von ihrer Seite", embed_open: "Für sich öffnen" },
-    pt: { embed_live: "Interativa, da sua página", embed_open: "Abrir à parte" },
-    it: { embed_live: "Interattiva, dalla sua pagina", embed_open: "Aprila da sola" },
-    ru: { embed_live: "Интерактивная, со своей страницы", embed_open: "Открыть отдельно" },
-    hi: { embed_live: "इंटरैक्टिव, अपने पेज से", embed_open: "अलग से खोलें" },
+    en: { embed_load: "Load interactive figure", embed_live: "Interactive, from its page", embed_open: "Open it on its own" },
+    zh: { embed_load: "加载交互图", embed_live: "交互图，来自原网页", embed_open: "单独打开" },
+    "zh-Hant": { embed_load: "載入互動圖", embed_live: "互動圖，來自原網頁", embed_open: "單獨開啟" },
+    ja: { embed_load: "インタラクティブ図を読み込む", embed_live: "インタラクティブな図（元のページから）", embed_open: "単独で開く" },
+    ko: { embed_load: "인터랙티브 그림 불러오기", embed_live: "인터랙티브 그림, 원래 페이지에서", embed_open: "따로 열기" },
+    es: { embed_load: "Cargar figura interactiva", embed_live: "Interactiva, de su página", embed_open: "Abrirla aparte" },
+    fr: { embed_load: "Charger la figure interactive", embed_live: "Interactive, depuis sa page", embed_open: "L’ouvrir seule" },
+    de: { embed_load: "Interaktive Abbildung laden", embed_live: "Interaktiv, von ihrer Seite", embed_open: "Für sich öffnen" },
+    pt: { embed_load: "Carregar figura interativa", embed_live: "Interativa, da sua página", embed_open: "Abrir à parte" },
+    it: { embed_load: "Carica figura interattiva", embed_live: "Interattiva, dalla sua pagina", embed_open: "Aprila da sola" },
+    ru: { embed_load: "Загрузить интерактивную иллюстрацию", embed_live: "Интерактивная, со своей страницы", embed_open: "Открыть отдельно" },
+    hi: { embed_load: "इंटरैक्टिव चित्र लोड करें", embed_live: "इंटरैक्टिव, अपने पेज से", embed_open: "अलग से खोलें" },
   };
   for (const [code, words] of Object.entries(EMBEDS)) Object.assign(S[code], words);
   // Settings' last section, TextFold in the reader's other tools (app.js, render: st-tools)
@@ -970,6 +976,28 @@ window.DR_I18N = (() => {
     hi: {"pp_fit": "चौड़ाई के अनुसार", "nb_title": "नोट", "nb_search": "अपने नोट, उनके अंश और अपने सवाल खोजें", "nb_f_all": "सभी", "nb_f_hl": "हाइलाइट", "nb_f_note": "नोट", "nb_f_ask": "सवाल", "nb_f_new": "किसी रिकॉर्ड में नहीं", "nb_list": "सूची", "nb_cal": "कैलेंडर", "nb_zoom_out": "छोटा करें", "nb_zoom_in": "बड़ा करें", "nb_pick": "यह नोट चुनें", "nb_pick_doc": "ये नोट चुनें", "nb_pick_all": "नीचे के सभी नोट चुनें", "nb_there": "मूल जगह खोलें", "nb_open": "पाठ खोलें", "nb_used": "{t} में", "nb_ctx": "आसपास का अनुच्छेद", "nb_loading": "पाठ पढ़ा जा रहा है…", "nb_gone": "यह अंश अब पाठ में नहीं है: मूल जगह खोलकर देखें कि यह कहाँ था।", "nb_whole": "पूरे पाठ पर", "nb_written": "मॉडल के शब्द, {lvl} स्तर पर", "nb_failed": "बन नहीं सका: {e}", "nb_deleted": "{n} हटाए गए", "nb_undo": "वापस लें", "nb_empty": "अभी कोई नोट नहीं है। रीडर में किए गए हाइलाइट, नोट और सवाल सब यहाँ आते हैं।", "nb_none": "कोई नोट मेल नहीं खाता।", "nb_month_pick": "पूरा महीना चुनें", "nb_clear_days": "चुने गए दिन हटाएँ", "nb_f_new_tip": "वे नोट जो अभी किसी रिकॉर्ड में नहीं गए", "nb_today_btn": "आज", "nb_today_tip": "आज चुनें", "nb_unpick": "हटाएँ", "nb_obsidian": "Obsidian में भेजें", "nb_saved": "सहेजा गया: {name}", "nb_scope_all": "सभी नोट", "nb_scope_picked": "चुने हुए", "nb_clear_picked": "सारा चुनाव हटाएँ", "nb_delete_note": "यह नोट मिटाएँ", "nb_ask_ph": "इन नोट से कुछ भी पूछें", "nb_ask_go": "पूछें", "nb_ask_tip": "लाइब्रेरी के ‘पढ़ने के रिकॉर्ड’ में एक दस्तावेज़ बनता है: मॉडल इन नोट से जवाब देता है और बताता है कि किन नोट पर आधारित है", "nb_close": "बंद करें", "nb_no_model_ask": "सवाल के लिए मॉडल चाहिए, और कोई जुड़ा नहीं है। ‘पाठ-दर-पाठ सिंहावलोकन’ के लिए नहीं चाहिए: वह नोट को पाठ के हिसाब से सूचीबद्ध करता है।", "nb_writing": "“{q}” लिखा जा रहा है। तैयार होने पर साइडबार में दिखेगा: तब तक कुछ और करें।", "nb_made": "बन गया: {t}", "nb_open_made": "खोलें", "nb_rename": "नाम बदलें", "nb_raw": "नोट जैसे हैं वैसे निर्यात करें", "nb_ask_ph2": "इन नोट से कुछ भी पूछें, जैसे: ये पाठ आपस में कैसे जुड़ते हैं?", "nb_tpl_name": "नाम दें", "nb_tpl_prompt": "क्या लिखना है, जैसे: इस क्षेत्र से अनजान सहकर्मी के लिए तीन मुख्य बातें", "nb_tpl_note": "आप जो भी माँगें, हर वाक्य बताता है कि वह किस नोट या अंश पर आधारित है, मॉडल की अपनी जोड़ी हुई बात उसकी बताई जाती है, और लंबाई छोटी रहती है।", "nb_tpl_delete": "मिटाएँ", "nb_tpl_cancel": "रद्द करें", "nb_tpl_save": "सहेजें", "nb_tpl_edit": "यह टेम्पलेट बदलें", "nb_tpl_add": "+ अपना तरीका", "nb_raw_tip": "चुने हुए नोट बिना बदले, Obsidian के लिए Markdown के रूप में: मॉडल के बिना", "nb_stage_write": "लिखा जा रहा है…", "nb_stopped_made": "रोका गया: कुछ नहीं रखा गया।", "sb_notes": "नोट", "sb_summary": "{when} को बना", "g_summaries": "पढ़ने के रिकॉर्ड", "nb_tpl_lead": "सारांश का रूप", "nb_tip_recap": "हर पाठ क्या कहता है और आपका ध्यान किस पर गया, फिर आप आजकल किसमें रुचि लेते दिखते हैं", "nb_tip_themes": "पाठ-दर-पाठ नहीं: नोट दो से चार विषयों में समेटे गए", "nb_tip_related": "लेख के संबंधित कार्य के लिए एक-दो अनुच्छेद, हर वाक्य स्रोत के साथ", "nb_tpl_add_tip": "बताइए कि सारांश कैसा चाहिए, उसे अपने टेम्पलेट के रूप में रखिए और एक क्लिक से इस्तेमाल कीजिए"},
   };
   for (const [code, words] of Object.entries(NB)) Object.assign(S[code], words);
+  Object.assign(S.en, {
+    plan_title: 'Use your ChatGPT plan', plan_continue: 'Continue with ChatGPT', plan_enable: 'Enable plan usage',
+    plan_manage: 'Manage usage', plan_sign_out: 'Sign out', plan_switch: 'Use another account',
+    plan_disclosure: 'When you choose a ChatGPT model, TextFold sends the document passages or questions it needs to OpenAI. Eligible requests count toward your ChatGPT usage.',
+    plan_active: 'Using ChatGPT plan', plan_enabled: 'Plan usage enabled', plan_no_grant: 'Plan usage disabled',
+    plan_restart: 'Sign in on this computer. TextFold asks you to reconnect after a restart.',
+    plan_pending: 'Finish signing in and review the plan permission in your browser.',
+    plan_open_browser: 'Open OpenAI sign-in page', plan_welcome: 'Your ChatGPT plan is connected',
+    plan_welcome_body: 'Choose a ChatGPT model here to use your plan for eligible requests. You can review or limit usage in ChatGPT settings.',
+    plan_got_it: 'Got it',
+  });
+  Object.assign(S.zh, {
+    plan_title: '使用你的 ChatGPT 订阅', plan_continue: '使用 ChatGPT 继续', plan_enable: '启用订阅额度',
+    plan_manage: '管理用量', plan_sign_out: '退出登录', plan_switch: '使用其他账号',
+    plan_disclosure: '选择 ChatGPT 模型后，TextFold 会将处理所需的文档段落或问题发给 OpenAI。符合条件的请求计入你的 ChatGPT 用量。',
+    plan_active: '正在使用 ChatGPT 订阅', plan_enabled: '订阅额度已启用', plan_no_grant: '订阅额度未启用',
+    plan_restart: '请在这台电脑上登录。TextFold 重启后需要重新连接。',
+    plan_pending: '请在浏览器中完成登录，并查看订阅额度使用权限。',
+    plan_open_browser: '打开 OpenAI 登录页面', plan_welcome: '已连接你的 ChatGPT 订阅',
+    plan_welcome_body: '在这里选择 ChatGPT 模型，即可用订阅额度处理符合条件的请求。你可以在 ChatGPT 设置中查看用量或设定限额。',
+    plan_got_it: '知道了',
+  });
   // text: the document is not a paper, and the questions about it say so
   const t = (lang, text) => ({ ...S.en, ...(S[lang] || {}), ...(text ? { ...DOCS.en, ...(DOCS[lang] || {}) } : {}) });
   // the language a visitor most likely reads, among the ones offered: the interface's, or `among` (a text's, by name)

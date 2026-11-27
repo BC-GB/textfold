@@ -171,7 +171,7 @@ class WorkBuddy(unittest.TestCase):
             r.__enter__.return_value.read.return_value = b'{"object": "list", "data": [{"id": "auto", "owned_by": "workbuddy"}]}'
             return r
 
-        with mock.patch("urllib.request.urlopen", urlopen):
+        with mock.patch.object(llm_openai, "open_provider", urlopen):
             self.assertEqual([m["id"] for m in providers.probe(self.BASE, "pk_demo")], ["auto"])
         self.assertEqual(seen[0].get_header("X-wb-webapp-access-key"), "pk_demo")
         self.assertFalse(seen[0].has_header("Authorization"))
@@ -195,7 +195,7 @@ class SaysItIsTextFold(unittest.TestCase):
             r.__enter__.return_value.headers = {"Content-Type": "application/json"}
             return r
 
-        with mock.patch("urllib.request.urlopen", urlopen):
+        with mock.patch.object(llm_openai, "open_provider", urlopen):
             providers.probe("https://api.example.com/v1", "sk")
             try:
                 llm_openai._post("https://api.example.com/v1/chat/completions", {"model": "m"}, {"Authorization": "Bearer sk"}, 5)

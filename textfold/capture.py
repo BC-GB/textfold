@@ -21,6 +21,7 @@ says which TextFold answers, for the extension to tell the reader what to do whe
                                                                                  extension and those named
   python3 -m textfold capture-host                                               what the browser starts
 """
+import http.client
 import json
 import os
 import re
@@ -29,10 +30,9 @@ import struct
 import sys
 import time
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
-from . import local, store, webpage
+from . import local, local_access, store, webpage
 
 HOST = "app.textfold.capture"
 FORMAT = "textfold/snapshot"
@@ -82,31 +82,31 @@ def write_message(stream, obj):
 # ── a snapshot, kept ─────────────────────────────────────────────────
 def _server_url():
     """The reader of the TextFold running now (server.json), if one is."""
-    try:
-        s = json.loads((store.DATA / "server.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    pid = s.get("pid") if isinstance(s, dict) else None
-    if not isinstance(pid, int) or not isinstance(s.get("url"), str):
-        return None
-    from .storage_settings import _process_alive
-    if not _process_alive(pid):
-        return None   # (a server ended outright leaves its file behind)
-    return s["url"]
+    active = local_access.discover(store.DATA)
+    return active[0] if active else None
 
 
 def _generate(there, pid):
     """The paper's levels asked of the TextFold that runs, in the reader's language as its page last told it (as a
     page added on its landing is): the job's id, or None."""
     from . import langs, models
+    access = local_access.discover(store.DATA)
+    if access is None or there != access[0]:
+        return None
     lang = models.load_settings().get("lang")
     body = json.dumps({"paper": pid, "lang": lang if lang in langs.LANGS else None}).encode("utf-8")
-    req = urllib.request.Request(f"{there}/api/generate", data=body, headers={"Content-Type": "application/json"})
-    try:   # (straight to this computer, whatever proxy the system names)
-        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=10) as r:
-            return json.loads(r.read() or b"{}").get("id")
-    except (OSError, ValueError):
+    # Always use loopback directly. A generation job has no redirects or proxy.
+    conn = http.client.HTTPConnection("127.0.0.1", urllib.parse.urlsplit(there).port, timeout=10)
+    try:
+        conn.request("POST", "/api/generate", body, {"Content-Type": "application/json", "Authorization": "Bearer " + access[1]})
+        with conn.getresponse() as response:
+            if response.status != 200:
+                return None
+            return json.loads(response.read() or b"{}").get("id")
+    except (OSError, ValueError, http.client.HTTPException):
         return None
+    finally:
+        conn.close()
 
 
 def hello():
@@ -126,7 +126,8 @@ def reading_of(read, html, url):
     got = {}
     for name, view in webpage.views_of(read).items():
         try:
-            got[name] = (*webpage.read_view(view, html, url), view["html"], None)
+            article, info = webpage.read_view(view, html, url)
+            got[name] = (article, info, article, None)
         except ValueError:   # (web-notext: too few words once the site's bits are out)
             pass
     try:
@@ -144,7 +145,15 @@ def reading_of(read, html, url):
                     for k, (h, i, _, _) in got.items()}
             how, _ = adapt.choose(html, url, docs)
         except Exception:   # (the check could not be made: the views by their words, as before)
-            how = webpage.view_of(read)[0] or "textfold"
+            # Fall back by the filtered articles' words, never the reading engines' pre-filter counts.
+            safe = {}
+            for name, (article, _, _, _) in got.items():
+                if name not in webpage.VIEWS:
+                    continue
+                text = re.sub(r"<[^>]+>", " ", article)
+                count = len(text.split()) + round(len(re.findall(r"[぀-ヿ㐀-鿿가-힯]", text)) / 2)
+                safe[name] = {"html": article, "words": max(webpage.MIN_WORDS, count)}
+            how = webpage.view_of(safe)[0] or "textfold"
             how = how if how in got else next(iter(got))
     return (how, *got[how])
 
@@ -180,10 +189,10 @@ def receive(msg):
         meta["snapshot_kind"] = "browser"
         meta["snapshot_taken"] = msg.get("taken") if isinstance(msg.get("taken"), str) else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         meta["reader"] = how
-        pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', read))
-        local.store_doc(pid, read, meta, "snapshot.html", html, lambda folder: local.Images(folder, None, pre=pre).resolve, sizes=True)
+        resolver = webpage.image_resolver(read, webpage.PageRequests(url))
+        local.store_doc(pid, read, meta, "snapshot.html", html, resolver, sizes=True)
         if view:
-            (d / "article.html").write_text(view, encoding="utf-8")   # (as the reading view gave it)
+            (d / "article.html").write_text(view, encoding="utf-8")   # (the reading view after the visibility filter)
         else:
             (d / "source.md").write_text(md, encoding="utf-8")
     there = _server_url()

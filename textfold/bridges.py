@@ -4,7 +4,7 @@ by one authorisation.
 ChatGPT bridge: openai-oauth (npm) serves the ChatGPT plan as an OpenAI-compatible endpoint on 127.0.0.1:10531. It
 signs in with Codex's login (~/.codex/auth.json); when there is none, its sign-in runs first and opens a browser (the
 bridge alone, started without a terminal, would only stop for want of a login). Started detached, it outlives this
-server; `npx openai-oauth stop` stops it.
+server; `npx openai-oauth@2.0.0 stop` stops it.
 
 OpenRouter: OAuth with PKCE, OpenRouter's supported one-click door. No app registration and no secret: this server
 makes the verifier, the browser takes the reader to OpenRouter's consent page, OpenRouter sends them back here with a
@@ -13,6 +13,7 @@ provider (settings, mode 600); it can be revoked on OpenRouter's keys page.
 """
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -27,14 +28,16 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from . import agents, providers
+from . import agents, llm_openai, providers
 from .store import HOME
 
 BRIDGE = "http://127.0.0.1:10531/v1"
-BRIDGE_PACKAGE = "openai-oauth@2"
+BRIDGE_PACKAGE = "openai-oauth@2.0.0"
 AUTH_URL = "https://openrouter.ai/auth"
 EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys"
 _OR = {}   # the authorisation under way: verifier, back (where to return), minted (the key, until saved)
+_OR_LOCK = threading.Lock()
+_OAUTH_LIFETIME = 15 * 60
 _SEEN = {"at": 0.0, "status": None}   # the bridge's last status, asked for again after a few seconds
 _START = {"thread": None, "login": None, "error": None}   # a start under way: its sign-in link, what stopped it
 
@@ -51,7 +54,7 @@ def bridge_status(fresh=False, strict=False):
     answering raises (the discovery keeps its last result); a bridge that is not running is not a failure."""
     if fresh or _SEEN["status"] is None or time.time() - _SEEN["at"] >= 5:
         try:
-            with urllib.request.urlopen(f"{BRIDGE}/models", timeout=2) as r:
+            with llm_openai.open_provider(f"{BRIDGE}/models", timeout=2) as r:
                 ids = [m.get("id") for m in json.loads(r.read()).get("data", []) if m.get("id")]
             st = {"running": True, "models": ids}
         except Exception as e:
@@ -91,16 +94,30 @@ def bridge_start():
     return bridge_status(fresh=True)
 
 
+def _bridge_log(path):
+    # The login process can print a sign-in link. Protect new and existing
+    # logs before allowing the process to write any of its output.
+    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    log = os.fdopen(fd, "a", encoding="utf-8")
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(log.fileno(), 0o600)
+        return log
+    except OSError:
+        log.close()
+        raise
+
+
 def _start(npx, env):
-    HOME.mkdir(parents=True, exist_ok=True)
+    HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = HOME / "bridge.log"
     since = path.stat().st_size if path.exists() else 0   # what this start writes: an earlier one's lines are not its reason
     run = dict(cwd=tempfile.gettempdir(), env=env, stdin=subprocess.DEVNULL)
     try:
         if not codex_login():   # openai-oauth's own sign-in: it prints the link, and waits for the browser's answer
-            p = subprocess.Popen([npx, "-y", BRIDGE_PACKAGE, "login", "--no-open"], stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", **run)
-            with open(path, "a", encoding="utf-8") as log:
+            cmd = [npx, "-y", BRIDGE_PACKAGE, "login", "--no-open"]
+            with _bridge_log(path) as log, subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                          text=True, encoding="utf-8", errors="replace", **run) as p:
                 for line in p.stdout:
                     log.write(line)
                     log.flush()
@@ -108,10 +125,10 @@ def _start(npx, env):
                     if link and not _START["login"]:
                         _START["login"] = link.group(0)
                         webbrowser.open(link.group(0))
-            if p.wait():
+            if p.returncode:
                 raise RuntimeError(_said(path, since) or f"the ChatGPT sign-in stopped (exit {p.returncode})")
             _START["login"] = None
-        with open(path, "a", encoding="utf-8") as log:
+        with _bridge_log(path) as log:
             p = subprocess.Popen([npx, "-y", BRIDGE_PACKAGE, "--detach"], stdout=log, stderr=log, start_new_session=True, **run)
         try:   # it leaves the bridge running and ends; one that ends with an error says why in the log
             code = p.wait(timeout=180)
@@ -141,39 +158,61 @@ def _b64(b):
 def openrouter_start(callback, back, desktop=False):
     """desktop: the consent page opens in the system browser, and the app waits for the key (openrouter_minted)."""
     verifier = _b64(secrets.token_bytes(48))
+    state = secrets.token_hex(32)
     challenge = _b64(hashlib.sha256(verifier.encode()).digest())
-    _OR.clear()
-    _OR.update({"verifier": verifier, "back": back or "/", "at": time.time(), "desktop": bool(desktop)})
-    q = urllib.parse.urlencode({"callback_url": callback, "code_challenge": challenge, "code_challenge_method": "S256"})
+    with _OR_LOCK:
+        _OR.clear()
+        _OR.update({"verifier": verifier, "state": state, "back": back or "/", "at": time.monotonic(), "desktop": bool(desktop)})
+    q = urllib.parse.urlencode({"callback_url": callback + "/" + state, "code_challenge": challenge, "code_challenge_method": "S256"})
     return f"{AUTH_URL}?{q}"
 
 
-def openrouter_finish(code):
+def openrouter_finish(code, state):
     """The code OpenRouter sent back, and the verifier kept here, exchanged for a key. Returns (key, error, back)."""
-    verifier, back = _OR.pop("verifier", None), _OR.get("back", "/")
-    if not code or not verifier:
-        return None, "no authorisation was under way", back
+    with _OR_LOCK:
+        _expire_authorization()
+        verifier = _OR.get("verifier")
+        back = _OR.get("back", "/")
+        if not code or not verifier or not hmac.compare_digest(state, _OR["state"]):
+            return None, "no authorisation was under way", None
+        del _OR["verifier"]
     body = json.dumps({"code": code, "code_verifier": verifier, "code_challenge_method": "S256"}).encode()
     req = urllib.request.Request(EXCHANGE_URL, data=body, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with llm_openai.open_provider(req, timeout=30) as r:
             key = json.loads(r.read()).get("key")
     except Exception as e:
         return None, str(e)[:200], back
     if not key:
         return None, "no key in the reply", back
-    _OR["minted"] = key
+    with _OR_LOCK:
+        _expire_authorization()
+        if _OR.get("state") != state:
+            return None, "authorisation has changed or expired", back
+        _OR["minted"] = key
+        _OR["at"] = time.monotonic()
     return key, None, back
 
 
+def _expire_authorization():
+    if _OR and time.monotonic() - _OR["at"] > _OAUTH_LIFETIME:
+        _OR.clear()
+
+
 def minted():
-    return _OR.get("minted")
+    with _OR_LOCK:
+        _expire_authorization()
+        return _OR.get("minted")
 
 
 def for_desktop():
-    return bool(_OR.get("desktop"))
+    with _OR_LOCK:
+        _expire_authorization()
+        return bool(_OR.get("desktop"))
 
 
-def take_minted():
-    return _OR.pop("minted", None)
+def clear_minted(saved):
+    with _OR_LOCK:
+        if _OR.get("minted") == saved:
+            _OR.clear()
 

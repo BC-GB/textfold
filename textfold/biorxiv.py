@@ -20,8 +20,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .web_requests import PUBLIC
 from . import epmc, jats, local, store
-from .fetch import AGAIN, UA, urlread
+from .fetch import AGAIN, MAX_API, MAX_IMAGE, MAX_SOURCE, UA, urlread
 
 API = "https://api.biorxiv.org/details/{server}/{doi}"
 SERVERS = ("biorxiv", "medrxiv")
@@ -46,19 +47,19 @@ def pid_of(server, doi):
     return f"{server}-{doi.split('/', 1)[1]}"
 
 
-def _get(url, timeout=60):
+def _get(url, timeout=60, limit=MAX_SOURCE):
     paced = re.match(r"https?://(www\.)?(biorxiv|medrxiv)\.org/", url)
     if paced:
         with _pace["lock"]:
             time.sleep(max(0.0, _pace["last"] + DELAY - time.time()))
             _pace["last"] = time.time()
     again = tuple(max(w, DELAY) for w in AGAIN) if paced else AGAIN   # (a try again keeps to their pace too)
-    data, final, _ = urlread(urllib.request.Request(url, headers=UA), timeout, again=again)
+    data, final, _ = urlread(urllib.request.Request(url, headers=UA), timeout, limit, again=again, open_url=PUBLIC.open)
     return data, final
 
 
 def versions(server, doi):
-    data, _ = _get(API.format(server=server, doi=doi), 30)
+    data, _ = _get(API.format(server=server, doi=doi), 30, MAX_API)
     return sorted(json.loads(data).get("collection") or [], key=lambda r: int(r.get("version") or 0))
 
 
@@ -74,7 +75,7 @@ def find(doi, server=None):
 def image_resolver(content, folder, progress=None, total=0):
     """A figure's or table's "F1.large.jpg" beside the XML (…/content/biorxiv/early/<date>/<suffix>/); any other
     picture ("embed/graphic-6.gif") where the site keeps them (…/sites/default/files/highwire/biorxiv/early/…)."""
-    images = local.Images(folder, None, get=_get)
+    images = local.Images(folder, None, get=lambda url: _get(url, limit=MAX_IMAGE))
 
     def resolve(src):
         if progress:

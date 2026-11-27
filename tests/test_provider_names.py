@@ -5,6 +5,7 @@ second saved over the first (#115). No model, no network: the endpoints are only
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import json
 import os
 import shutil
@@ -41,13 +42,13 @@ class Saved(unittest.TestCase):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             cls.port = s.getsockname()[1]
-        env = {**os.environ, "HOME": str(cls.home), "USERPROFILE": str(cls.home), "TEXTFOLD_DATA": str(cls.home / "data"),
+        env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(cls.home), "USERPROFILE": str(cls.home), "TEXTFOLD_DATA": str(cls.home / "data"),
                "TEXTFOLD_NO_MODELS": "1", "PYTHONUSERBASE": site.getuserbase()}
         cls.proc = subprocess.Popen([sys.executable, "-m", "textfold", "serve", "--port", str(cls.port)], cwd=ROOT, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(150):
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
+                urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
                 break
             except OSError:
                 time.sleep(0.1)
@@ -62,7 +63,7 @@ class Saved(unittest.TestCase):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urlopen(req, timeout=60) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())

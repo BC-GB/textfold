@@ -5,6 +5,7 @@ elsewhere. A server erases the old ones when it starts and keeps the rest.
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import os
 import site
 import socket
@@ -128,14 +129,14 @@ class AtStart(unittest.TestCase):
             with socket.socket() as s:
                 s.bind(("127.0.0.1", 0))
                 port = s.getsockname()[1]
-            env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "LOCALAPPDATA": str(home / "AppData" / "Local"),
+            env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(home), "USERPROFILE": str(home), "LOCALAPPDATA": str(home / "AppData" / "Local"),
                    "TEXTFOLD_DATA": str(data), "TEXTFOLD_NO_MODELS": "1", "PYTHONUSERBASE": site.getuserbase()}
             proc = subprocess.Popen([sys.executable, "-m", "textfold", "serve", "--port", str(port)], cwd=ROOT, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 for _ in range(100):
                     try:
-                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/papers", timeout=1):
+                        with urlopen(f"http://127.0.0.1:{port}/api/papers", timeout=1):
                             break
                     except OSError:
                         time.sleep(0.1)

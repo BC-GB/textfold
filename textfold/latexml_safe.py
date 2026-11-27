@@ -9,7 +9,7 @@ LaTeXML gave them, and tables are styled inline. semantic.py's allowlist is made
 Removed:
   elements   script, style, iframe, object (parse.py has already turned the picture ones into <img>), embed, form,
              base, meta, link, and frame, frameset and applet, which load a document the same way iframe does
-  svg        <animate> and <set> that target an href or src, which could swap in a javascript: URL after the page loads
+  svg        <animate> and <set> outside simple geometric and opacity changes
   attributes on* handlers; any attribute whose value is a javascript: or vbscript: URL; a data: URL in href,
              xlink:href or src unless it is an image or plain text (a code listing's download button: LaTeXML
              puts the listing in its link as text/plain)
@@ -24,10 +24,14 @@ import re
 REMOVE = ("script", "style", "iframe", "object", "embed", "form", "base", "meta", "link", "frame", "frameset", "applet")
 URL_ATTRS = ("href", "xlink:href", "src")
 SMIL = ("animate", "set")   # SVG elements that can set another attribute, an href included, from their own attributes
+ANIMATED_GEOMETRY = {"x", "y", "x1", "x2", "y1", "y2", "cx", "cy", "r", "rx", "ry", "d", "points", "width",
+                     "height", "transform", "opacity", "fill-opacity", "stroke-opacity", "stroke-width"}
+FETCH_ATTRS = {"ping", "attributionsrc", "srcset", "imagesrcset", "srcdoc"}
 
 # a browser drops tabs, newlines and other control characters inside a URL's scheme, so "java\tscript:" is javascript:
 _CTRL = re.compile(r"[\x00-\x20\x7f]")
 _SCRIPT_URL = re.compile(r"^(?:javascript|vbscript):")
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:")
 _SAFE_DATA = re.compile(r"^data:(?:image/|text/plain[;,])")   # pictures, and the text of a listing to download
 # CSS lets a function name be spelled with escapes (u\72l) and broken up by comments
 _CSS_ESCAPE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})\s?|(.))", re.S)
@@ -84,14 +88,14 @@ def make_safe(root):
         if name in REMOVE:
             el.decompose()
             continue
-        if name in SMIL and _flat(str(el.get("attributename", ""))).split(":")[-1] in ("href", "src"):
+        if name in SMIL and _flat(str(el.get("attributename", ""))) not in ANIMATED_GEOMETRY:
             el.decompose()
             continue
         for key in list(el.attrs):
             low = key.lower()
             value = el.attrs[key]
             text = " ".join(value) if isinstance(value, list) else str(value)
-            if low.startswith("on"):
+            if low.startswith("on") or low in FETCH_ATTRS:
                 del el.attrs[key]
             elif low == "style":
                 cleaned = _clean_style(text)
@@ -101,5 +105,12 @@ def make_safe(root):
                     el.attrs[key] = cleaned
             elif _SCRIPT_URL.match(_flat(text)):
                 del el.attrs[key]
-            elif low in URL_ATTRS and _flat(text).startswith("data:") and not _SAFE_DATA.match(_flat(text)):
-                del el.attrs[key]
+            elif low in URL_ATTRS:
+                url = _flat(text)
+                if url.startswith("data:"):
+                    if not _SAFE_DATA.match(url):
+                        del el.attrs[key]
+                elif _SCHEME.match(url):
+                    allowed = ("http:", "https:", "mailto:", "tel:") if name == "a" else ("http:", "https:")
+                    if not url.startswith(allowed):
+                        del el.attrs[key]

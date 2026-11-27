@@ -21,13 +21,14 @@ Antigravity's `agy/<model>`.
 Agents run here as one-shot text generators: no tools, no session, a scratch working directory. A question about a
 text can be looked up on the web (tools=True: the switch beside a question; models.ask_spec): the agent's own web
 tools, its own system prompt with ours after it, and nothing that changes a file (Claude Code and CodeBuddy: WebSearch
-and WebFetch alone, no MCP server; Pi: its extensions' tools, none of its own; Codex: its web search, in the read-only
-sandbox it always runs in, where it may read but writes nothing; Antigravity: its web search and page reading, in its
+and WebFetch alone, no MCP server; Pi: its extensions' tools, none of its own; Codex: its web search with a scratch-only
+permission profile; Antigravity: its web search and page reading, in its
 sandbox). Still no session, and the scratch directory to start in.
 """
 import contextlib
 import glob
 import json
+import ntpath
 import os
 import queue
 import re
@@ -246,7 +247,8 @@ def search_dirs():
     out, seen = [], set()
     for d in dirs + managers:
         d = os.path.expanduser(d)
-        if d and d not in seen and os.path.isdir(d):
+        # Automatic discovery and child processes must not select a binary from their current directory.
+        if os.path.isabs(d) and d not in seen and os.path.isdir(d):
             seen.add(d)
             out.append(d)
     return out
@@ -269,6 +271,16 @@ def child_env():
     return env
 
 
+def _direct_arguments(args):
+    if not isinstance(args, (list, tuple)) or not args:
+        raise ValueError("An agent must start with a program and a list of arguments")
+    if WIN:
+        name = ntpath.basename(os.fspath(args[0])).lower()
+        if name.endswith((".bat", ".cmd")) or name in {"cmd", "cmd.exe", "command.com"}:
+            raise RuntimeError("Use a native executable or a supported npm shim for this agent")
+    return args
+
+
 def run(args, *, stop=None, timeout=None, input=None, done=None, **kw):
     """subprocess.run for an agent's call, which the reader's Stop ends at once: stop (a threading.Event; else the one
     this thread's calls are made under, llm.stoppable) set while it runs ends the call's whole process tree (an agent
@@ -279,9 +291,12 @@ def run(args, *, stop=None, timeout=None, input=None, done=None, **kw):
     there, its tree with it, and returns as if it had ended: an agent that goes on with work of its own once it has
     answered (Antigravity names the conversation)."""
     from .llm import Stopped, stop_now
+    args = _direct_arguments(args)
+    if kw.pop("shell", False):
+        raise ValueError("Agents cannot be started through a shell")
     stop = stop or stop_now()
     if stop is None and done is None:
-        return subprocess.run(args, input=input, timeout=timeout, **kw)
+        return subprocess.run(args, input=input, timeout=timeout, shell=False, **kw)
     stop = stop or threading.Event()
     if stop.is_set():
         raise Stopped()
@@ -291,7 +306,8 @@ def run(args, *, stop=None, timeout=None, input=None, done=None, **kw):
         if input is not None:
             source.write(input.encode(kw.get("encoding") or "utf-8", kw.get("errors") or "strict") if isinstance(input, str) else input)
             source.seek(0)
-        p = subprocess.Popen(args, stdin=source if input is not None else None, **({} if WIN else {"start_new_session": True}), **kw)
+        p = subprocess.Popen(args, stdin=source if input is not None else None, shell=False,
+                             **({} if WIN else {"start_new_session": True}), **kw)
         deadline = None if timeout is None else time.monotonic() + timeout
         try:
             while True:
@@ -488,7 +504,7 @@ def argv(path):
 
 
 def _run(args, timeout, env=None, **kw):
-    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    return subprocess.run(_direct_arguments(args), capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False,
                           timeout=timeout, env=env or child_env(), stdin=subprocess.DEVNULL, **kw)
 
 
@@ -548,8 +564,9 @@ def _rpc(args, requests, timeout=30, cwd=None):
     """Write JSON lines, collect the replies whose id we asked for. When none comes back, an error that says why, in the
     program's own words (what it wrote to stderr) when it stopped: a scan then shows it, not "0 models" (#12). The pipes
     are UTF-8 whatever the system's codepage (a Chinese Windows would read them as cp936)."""
+    args = _direct_arguments(args)
     err = tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace")
-    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8",
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8", shell=False,
                          errors="replace", env=child_env(), cwd=cwd or str(HOME))
     lines = queue.Queue()   # read by a thread: select() cannot wait on a pipe on Windows
     threading.Thread(target=lambda: [*map(lines.put, p.stdout), lines.put(None)], daemon=True).start()
@@ -589,6 +606,17 @@ def _rpc(args, requests, timeout=30, cwd=None):
 # plugin catalog anew (Codex 0.163: megabytes a start, and a document starts one a passage, #120). As -c, not --disable:
 # a Codex that does not know one of these features ignores it, where --disable stops at once.
 CODEX_LEAN = [x for f in ("plugins", "remote_plugin", "apps") for x in ("-c", f"features.{f}=false")]
+CODEX_DOCUMENT_CONFIG = [
+    'default_permissions="textfold-document"',
+    'permissions.textfold-document.filesystem={":workspace_roots"="read"}',
+    'permissions.textfold-document.network.enabled=false',
+    'approval_policy="never"',
+    'features.shell_tool=false',
+    'features.shell_snapshot=false',
+    'features.goals=false',
+    'mcp_servers={}',
+    'project_doc_max_bytes=0',
+]
 
 
 def _codex_models(path, cmd=None):
@@ -872,8 +900,12 @@ def run_codex(model, prompt, schema, system, effort, timeout, tools=False, cmd=N
     with scratch() as tmp:  # a scratch cwd: no repository, nothing to edit
         sf, of = Path(tmp) / "schema.json", Path(tmp) / "out.txt"
         sf.write_text(json.dumps(_strict(schema)), encoding="utf-8")
-        # (tools: its web search too; the sandbox stays read-only)
-        args = [*cmd, *(["--search"] if tools else []), "exec", *CODEX_LEAN, "--ephemeral", "--skip-git-repo-check", "-s", "read-only",
+        # A read-only profile can still read the host. Require the named scratch-only profile
+        # and suppress tool and project configuration before any document prompt is processed.
+        config = [*CODEX_DOCUMENT_CONFIG, *([] if tools else ['web_search="disabled"'])]
+        overrides = [value for setting in config for value in ("-c", setting)]
+        args = [*cmd, *(["--search"] if tools else []), "exec", *CODEX_LEAN, *overrides,
+                "--strict-config", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check",
                 "-m", model, "--output-schema", str(sf), "-o", str(of)]
         # off is "none" (gpt-5.5 takes it, and refuses "minimal"); a model that refuses "none" runs at "low"
         for level in (["none", "low"] if effort == "off" else [effort]):

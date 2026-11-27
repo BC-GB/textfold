@@ -4,6 +4,7 @@ stays (its Python cannot move), when the library moves too.
 The settings, the library, the system's folder for app data and PaperFold's old place are temporary: nothing of the
 reader's is read or written, and nothing is installed (the steps of the install are stubbed).
 """
+from _local_test import KEY, urlopen
 import json
 import tempfile
 import threading
@@ -45,6 +46,22 @@ class Base(unittest.TestCase):
 
 
 class Folder(Base):
+    def test_engine_location_cannot_be_redirected_after_selection(self):
+        chosen = self.root / "chosen"
+        engine.choose(str(chosen))
+        other = ready(self.root / "other-engine")
+        try:
+            chosen.symlink_to(other, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symbolic links are unavailable: {error}")
+        self.assertIsNone(engine.where())
+        with mock.patch.object(engine, "_uv", return_value="uv") as uv, mock.patch.object(engine, "_run"):
+            with self.assertRaisesRegex(ValueError, "saved folder changed"):
+                engine.install()
+        uv.assert_not_called()
+        engine.uninstall()
+        self.assertTrue((other / engine.MARK).is_file())
+
     def test_beside_the_library(self):
         self.assertEqual(engine.status()["path"], str(self.app / "engine"))
         self.library = self.root / "D" / "TextFold"   # moved in Settings
@@ -109,7 +126,7 @@ class Route(Base):
     def setUp(self):
         super().setUp()
         self.jobs = FakeJobs()
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(self.jobs))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(self.jobs, KEY))
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
@@ -118,7 +135,7 @@ class Route(Base):
         req = urllib.request.Request(f"http://127.0.0.1:{self.httpd.server_port}{path}", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urlopen(req, timeout=30) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
@@ -128,9 +145,14 @@ class Route(Base):
         full.mkdir()
         (full / "notes.txt").write_text("mine", encoding="utf-8")
         code, got = self.post("/api/engine/install", {"path": str(full)})
+        self.assertEqual((code, got.get("code")), (403, "folder_approval"))
+        server.local_access.approve_folder(self.data, "engine-install", str(full), KEY)
+        code, got = self.post("/api/engine/install", {"path": str(full)})
         self.assertEqual((code, got.get("code")), (400, "not_empty"))
         self.assertEqual(self.jobs.started, [])
-        code, got = self.post("/api/engine/install", {"path": str(self.root / "E" / "MinerU")})
+        selected = str(self.root / "E" / "MinerU")
+        server.local_access.approve_folder(self.data, "engine-install", selected, KEY)
+        code, got = self.post("/api/engine/install", {"path": selected})
         self.assertEqual((code, got["kind"]), (200, "install"))
         self.assertEqual(self.jobs.started, [self.root / "E" / "MinerU"])
         code, got = self.post("/api/engine/install", {})   # (a file's card: where it was chosen)

@@ -7,14 +7,15 @@
 // (tkinter and its Tcl/Tk, the test suite, IDLE) are left out: less to sign, a smaller app.
 //
 //   node scripts/prepare-payload.mjs                  for this computer
-//   node scripts/prepare-payload.mjs darwin x64       an Intel Mac's, on Apple silicon too (its Python runs under Rosetta)
-//   PBS_URL=<tar.gz url> node scripts/...             a given build
+//   node scripts/prepare-payload.mjs darwin x64       an Intel Mac's, with the x86_64 Rust target and Xcode command line tools
+//   PBS_URL=<https url> PBS_SHA256=<trusted sha256> node scripts/...     a given build
 // A Windows payload is made on Windows: the packages are installed by the Python it ships.
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync, createWriteStream } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { pythonArchive, pythonVersion, unpackPythonArchive } from './python-archive.mjs';
 import { fileURLToPath } from 'node:url';
 
 const desktop = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -27,42 +28,47 @@ if (!TARGET) throw new Error(`no payload for ${platform}-${arch}: ${Object.keys(
 if ((platform === 'win32') !== (process.platform === 'win32')) throw new Error(`a ${platform} payload is made on ${platform}`);
 const WIN = platform === 'win32';
 
-async function cpythonUrl() {
-  if (process.env.PBS_URL) return process.env.PBS_URL;
-  const r = await fetch('https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest', {
-    headers: { 'User-Agent': 'textfold-desktop', ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) },
-  });
-  if (!r.ok) throw new Error(`python-build-standalone releases: HTTP ${r.status}`);
-  const rel = await r.json();
-  const want = new RegExp(`^cpython-3\\.12\\.\\d+\\+\\d+-${TARGET}-install_only_stripped\\.tar\\.gz$`);
-  const asset = rel.assets.find((a) => want.test(a.name));
-  if (!asset) throw new Error(`no CPython 3.12 ${TARGET} build in ${rel.tag_name}`);
-  return asset.browser_download_url;
-}
-
-rmSync(payload, { recursive: true, force: true });
-mkdirSync(payload, { recursive: true });
-
-const url = await cpythonUrl();
-console.log('CPython:', url);
-const res = await fetch(url);
-if (!res.ok) throw new Error(`download: HTTP ${res.status}`);
-await pipeline(Readable.fromWeb(res.body), createWriteStream(path.join(payload, 'python.tar.gz')));
-// a relative name, run from the folder: Windows' own tar and Git's GNU tar both read it (GNU tar takes C:\… for a host)
-execFileSync('tar', ['-xzf', 'python.tar.gz'], { cwd: payload, stdio: 'inherit' });
-rmSync(path.join(payload, 'python.tar.gz'));
+const archive = pythonArchive(TARGET, process.env);
+console.log('CPython:', TARGET, archive.sha256);
+await unpackPythonArchive(archive, payload);
 const py = WIN ? path.join(payload, 'python', 'python.exe') : path.join(payload, 'python', 'bin', 'python3');
 // an Intel Mac's Python on Apple silicon runs under Rosetta, and pip then picks the Intel wheels
 const run = (args, opts) => execFileSync(platform === 'darwin' && arch !== process.arch ? 'arch' : py,
   platform === 'darwin' && arch !== process.arch ? [arch === 'x64' ? '-x86_64' : '-arm64', py, ...args] : args, opts);
 
-// The Anthropic API's SDK too: pip leaves it to those who want it (requirements.txt), but a person who picks the
-// Anthropic API in the app's Settings has no pip to install it with (#14)
-const APP_ONLY = ['anthropic>=1.15,<2'];
+// Custom archives must support the same Python series and security patch floor.
+run(['-I', '-S', '-c',
+  'import sys; floor=tuple(map(int, sys.argv[1].split("."))); ' +
+  'sys.exit(0 if sys.version_info[:2] == floor[:2] and sys.version_info[:3] >= floor else "Unexpected Python version for desktop payload")',
+  pythonVersion], { stdio: 'inherit' });
 
-console.log('installing TextFold\'s packages…');
-run(['-m', 'pip', 'install', '--no-cache-dir', '--disable-pip-version-check', '--no-warn-script-location',
-  '-r', path.join(root, 'requirements.txt'), ...APP_ONLY], { stdio: 'inherit', env: { ...process.env, PYTHONNOUSERSITE: '1' } });
+let lockFile = path.join(desktop, `requirements-${WIN ? 'win' : 'mac'}-${arch}.txt`);
+let wheelDir;
+try {
+  if (platform === 'darwin' && arch === 'x64') {
+    wheelDir = mkdtempSync(path.join(os.tmpdir(), 'textfold-mac-crypto-'));
+    const script = path.join(desktop, 'scripts', 'build-mac-intel-crypto.sh');
+    const args = [script, py, wheelDir, path.join(desktop, 'requirements-mac-x64-crypto-build.txt')];
+    if (process.arch === 'x64') {
+      execFileSync('/bin/bash', args, { stdio: 'inherit' });
+    } else {
+      execFileSync('arch', ['-x86_64', '/bin/bash', ...args], { stdio: 'inherit' });
+    }
+    const wheels = readdirSync(wheelDir).filter((name) => /^cryptography-50\.0\.2-.*-macosx_.*_x86_64\.whl$/.test(name));
+    if (wheels.length !== 1) throw new Error('Expected one cryptography 50.0.2 wheel for Intel macOS');
+    const digest = createHash('sha256').update(readFileSync(path.join(wheelDir, wheels[0]))).digest('hex');
+    const locked = readFileSync(lockFile, 'utf8');
+    lockFile = path.join(wheelDir, 'requirements.txt');
+    writeFileSync(lockFile, `${locked}cryptography==50.0.2 --hash=sha256:${digest}\n`);
+  }
+  console.log('Installing locked TextFold packages…');
+  const localWheel = wheelDir ? ['--find-links', wheelDir] : [];
+  run(['-I', '-m', 'pip', '--isolated', 'install', '--no-cache-dir', '--disable-pip-version-check', '--no-warn-script-location',
+    '--index-url', 'https://pypi.org/simple', '--only-binary=:all:', '--require-hashes', ...localWheel, '-r', lockFile],
+  { stdio: 'inherit' });
+} finally {
+  if (wheelDir) rmSync(wheelDir, { recursive: true, force: true });
+}
 
 // what the server never uses
 const stdlib = WIN ? path.join(payload, 'python', 'Lib')
@@ -89,5 +95,5 @@ for (const d of ['textfold']) {
 writeFileSync(path.join(app, 'requirements.txt'), '# installed into ../python\n');
 
 // a quick check that the runtime imports what the server needs (trafilatura: web pages and HTML files)
-run(['-s', '-c', 'import bs4, lxml, PIL, trafilatura, mammoth, openpyxl, pdf_inspector, pypdfium2, textfold.server; print("payload ok")'], { cwd: app, stdio: 'inherit' });
+run(['-s', '-c', 'import bs4, lxml, PIL, trafilatura, mammoth, openpyxl, pdf_inspector, pypdfium2, jwt, cryptography, textfold.server; print("payload ok")'], { cwd: app, stdio: 'inherit' });
 if (!existsSync(path.join(app, 'textfold', 'web', 'reader.js'))) throw new Error('web/ missing from the payload');

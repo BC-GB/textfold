@@ -5,6 +5,7 @@
          pi           `pi -p --mode json`                     (JSON asked for in the prompt)
   api    anthropic    the official SDK (`pip install anthropic`), structured output
          openai       any OpenAI-compatible endpoint (llm_openai.py), JSON mode
+         chatgpt-plan OpenAI Responses API with the signed-in reader's permission
 
 Replies are cached on disk by a hash of everything that shapes them, so a rebuild costs nothing until
 the prompt, the schema, the model or its effort changes. `force` skips the cache read: that is what
@@ -123,6 +124,8 @@ def call(prompt, schema, model, cache_dir: Path, force=False, timeout=900, syste
         parts = [system, prompt, schema, spec["model"]]  # the key the cache was first written with stays valid
     else:
         parts = [system, prompt, schema, spec["id"]] + ([effort] if effort else [])
+    if spec.get("protocol") == "chatgpt-plan":
+        parts.append(spec["target"])
     if spec.get("tools"):   # (an agent with its harness answers otherwise: its own key)
         parts.append("tools")
     key = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
@@ -143,7 +146,7 @@ def call(prompt, schema, model, cache_dir: Path, force=False, timeout=900, syste
     except Exception as e:
         # A reasoning level is a request, never a condition: whatever went wrong with it set (a flag or field an API no
         # longer takes, a level a model does not have), the call is made once more the model's own way.
-        if not effort:
+        if not effort or spec.get("protocol") == "chatgpt-plan":
             raise
         note = f"reasoning level {effort} dropped: {str(e)[:200]}"
         out, cost = _once(prompt, schema, {**spec, "effort": None}, timeout, system)
@@ -203,6 +206,10 @@ def _once(prompt, schema, spec, timeout, system):
         return agents.run_pi(spec["model"], prompt, schema, system, effort, timeout, tools)
     if spec["protocol"] == "anthropic":
         return _anthropic(prompt, schema, spec, timeout, system)
+    if spec["protocol"] == "chatgpt-plan":
+        from . import chatgpt
+        reply = chatgpt.connection.responses(spec["connection"], spec["model"], prompt, system, schema, timeout)
+        return agents.parse_json(reply, schema), None
     from .llm_openai import call as openai_call
     return openai_call(prompt, schema, spec, system, timeout)
 
@@ -290,7 +297,11 @@ def _anthropic(prompt, schema, spec, timeout, system=SYSTEM):
         raise RuntimeError("The Anthropic API needs the SDK: pip install anthropic")
     model = spec["model"]
     # no key stored: the SDK resolves ANTHROPIC_API_KEY or an `ant auth login` profile itself
-    client = anthropic.Anthropic(api_key=spec.get("api_key") or None, timeout=timeout)
+    # Bind the request to the selected endpoint, including when the SDK has its
+    # own base URL in the environment. Redirects must not resend a document.
+    client = anthropic.Anthropic(api_key=spec.get("api_key") or None, timeout=timeout,
+                                 base_url=spec.get("base") or "https://api.anthropic.com",
+                                 http_client=anthropic.DefaultHttpxClient(follow_redirects=False))
     extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"} if model in _FALLBACK_OK else {}
     try:
         for thinking, effort in _anthropic_levels(model, spec.get("effort")):
@@ -317,6 +328,8 @@ def _anthropic(prompt, schema, spec, timeout, system=SYSTEM):
         raise RuntimeError(f"Anthropic API error {e.status_code}: {e.message}")
     except anthropic.APIConnectionError:
         raise RuntimeError("Anthropic API: could not connect")
+    finally:
+        client.close()
     if msg.stop_reason == "refusal":
         raise RuntimeError("Anthropic API: the request was declined")
     if msg.stop_reason == "max_tokens":

@@ -120,9 +120,9 @@ def engine_cmd(args):
 def adapt_cmd(a):
     """A web page and a recipe for its site (adapt.py): with no recipe, what an agent is given to write one; with one,
     the page read with it and checked; --keep stores it so read, its snapshot beside it."""
-    import re
     from . import adapt, store, webpage
-    page, final, how = adapt.snapshot(a.url, a.snapshot, a.rendered)
+    requests = webpage.PageRequests(a.url)
+    page, final, how = adapt.snapshot(a.url, a.snapshot, a.rendered, requests)
     if not a.recipe:
         print(adapt.brief(a.url, page, final, how))
         return 0
@@ -139,10 +139,11 @@ def adapt_cmd(a):
             print(f"{pid} is in the library already: delete it first")
             return 2
         store.pdir(pid).mkdir(parents=True, exist_ok=True)
+        (store.pdir(pid) / "url.txt").write_text(a.url, encoding="utf-8")
         info = webpage.about(webpage.visible(page, final), final)
         meta = {**webpage.meta_of(pid, final, info), "recipe": recipe, "snapshot_kind": how}
-        pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html))
-        local.store_doc(pid, html, meta, "snapshot.html", page, lambda folder: local.Images(folder, None, pre=pre).resolve, sizes=True)
+        resolver = webpage.image_resolver(html, requests)
+        local.store_doc(pid, html, meta, "snapshot.html", page, resolver, sizes=True)
         print(f"kept: {pid}")
     return 0
 
@@ -158,6 +159,42 @@ def main():
         a = ap.parse_args(sys.argv[2:])
         from .server import serve
         return serve(a.port)
+    if sys.argv[1:] == ["local-access"]:
+        from . import local_access, store
+        if not sys.stdout.isatty():
+            sys.exit("Open a local interactive terminal to view the TextFold browser password.")
+        session = local_access.discover(store.DATA)
+        if not session:
+            sys.exit("Start TextFold using the same library before requesting its browser password.")
+        try:
+            return local_access.show_browser_password(session[1])
+        except OSError:
+            sys.exit("Open a local interactive terminal to view the TextFold browser password.")
+    if sys.argv[1:] == ["approve-local-agent"]:
+        from . import local_access, models
+        if sys.stdin.isatty():
+            print("Enter the exact custom agent command to allow in TextFold.", flush=True)
+        try:
+            local_access.approve_agent(models.SETTINGS.parent, sys.stdin.readline(4_096).strip())
+        except (OSError, ValueError) as error:
+            sys.exit(str(error))
+        return print("Custom agent command approved.")
+    if sys.argv[1:2] == ["approve-local-folder"]:
+        from . import local_access, store
+        parser = argparse.ArgumentParser(prog="textfold approve-local-folder")
+        parser.add_argument("action", choices=local_access.FOLDER_APPROVALS)
+        action = parser.parse_args(sys.argv[2:]).action
+        session = local_access.discover(store.DATA)
+        if not session:
+            sys.exit("Start TextFold using the same library before approving a folder.")
+        if sys.stdin.isatty():
+            print("Enter the folder path shown in TextFold Settings.", flush=True)
+        try:
+            requested = sys.stdin.readline(32_770).rstrip("\r\n")
+            local_access.approve_folder(store.DATA, action, requested, session[1])
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.exit(str(error))
+        return print("Folder approved for this TextFold session.")
     if len(sys.argv) > 1 and sys.argv[1] == "get":
         from .fold import LEVELS
         ap = argparse.ArgumentParser(prog="python3 -m textfold get", description="A document at one level: the map first, then the parts that matter, deeper.")

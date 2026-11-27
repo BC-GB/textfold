@@ -19,7 +19,8 @@ import urllib.parse
 import urllib.request
 
 from . import local, markdown, store
-from .fetch import UA, urlread
+from .fetch import DownloadBudget, UA, urlread
+from .web_requests import PageRequests
 
 LIMIT = 8 * 2**20   # no article's page is larger
 MIN_WORDS = 80      # fewer: a page that shows its text with scripts, or behind a sign-in
@@ -45,17 +46,26 @@ def register(url):
     return pid
 
 
-def _get(url):
+class WebPDF(ValueError):
+    def __init__(self, url, requests):
+        super().__init__("web-pdf")
+        self.url = url
+        self.requests = requests
+
+
+def _get(url, requests=None):
+    requests = requests or PageRequests(url)
     req = urllib.request.Request(url, headers={**UA, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"})
 
     def check(r):
         ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype == "application/pdf" or r.url.lower().split("?")[0].endswith(".pdf"):
-            raise ValueError("web-pdf")
+            raise WebPDF(r.geturl(), requests)
         if ctype and "html" not in ctype and "xml" not in ctype:
             raise ValueError("web-notext")
     try:
-        data, final, headers = urlread(req, 30, LIMIT + 1, check, busy={500, 502, 504})   # (429 and 503: a wall)
+        data, final, headers = urlread(req, 30, LIMIT + 1, check, busy={500, 502, 504},
+                                      open_url=requests.open, truncate=True)   # (429 and 503: a wall)
         return data[:LIMIT], final, headers.get_content_charset()
     except urllib.error.HTTPError as e:
         if e.code in (401, 402, 403, 407, 429, 451, 503):   # a sign-in, a paywall, a wall against programs
@@ -63,18 +73,28 @@ def _get(url):
         raise
 
 
+def _visibility_filter(root, keep_browser_notes):
+    """Remove elements hidden in HTML/CSS; a snapshot's browser markers stay only while finding its hover notes."""
+    # (one a browser's snapshot marked as not shown is left for _hover_marks: a note on its mark, or out after)
+    gone = [el for el in root.iter() if isinstance(el.tag, str) and (
+        el.get("aria-hidden") == "true" or el.tag in ("template", "noscript")
+        or el.get("data-tf-zero-size") is not None
+        or (el.get("data-tf-css-hidden") is not None and not keep_browser_notes)
+        or (el.get("data-tf-css-hidden") is None and (el.get("hidden") is not None
+            or HIDDEN_STYLE.search(el.get("style") or "") or HIDDEN_CLASS.search(el.get("class") or ""))))]
+    for el in gone:
+        if el.getparent() is None:
+            el.clear()
+        else:
+            el.drop_tree()
+
+
 def visible(page, url):
     """The page as its reader sees it: hidden elements removed, links and pictures as full addresses."""
     from lxml import html as lhtml
     root = lhtml.fromstring(page)
     root.make_links_absolute(url, resolve_base_href=True)
-    # (one a browser's snapshot marked as not shown is left for _hover_marks: a note on its mark, or out after)
-    gone = [el for el in root.iter() if isinstance(el.tag, str) and (el.get("aria-hidden") == "true" or el.tag in ("template", "noscript") or (
-        not el.get("data-tf-css-hidden") and (el.get("hidden") is not None or HIDDEN_STYLE.search(el.get("style") or "")
-                                              or HIDDEN_CLASS.search(el.get("class") or ""))))]
-    for el in gone:
-        if el.getparent() is not None:
-            el.drop_tree()
+    _visibility_filter(root, keep_browser_notes=True)
     return root
 
 
@@ -676,6 +696,9 @@ def read_view(view, page, final):
         info["title"] = view["title"].strip()[:300]
     root = lhtml.fragment_fromstring(view["html"], create_parent="div")
     root.make_links_absolute(final, resolve_base_href=False)
+    # Reading engines are not a visibility boundary. Recheck their fragment, including the browser's computed-style
+    # markers, before its words can meet the threshold, enter candidate comparison, or be stored for a model.
+    _visibility_filter(root, keep_browser_notes=False)
     for a in root.iter("a"):   # (a place on the page, a footnote's mark: there again)
         if (a.get("href") or "").startswith(final + "#"):
             a.set("href", a.get("href")[len(final):])
@@ -718,15 +741,23 @@ def meta_of(pid, final, info):
             "source": {"kind": "web", "site": info["site"], "url": final}, "label": info["site"]}
 
 
+def image_resolver(html, requests):
+    """Use the same destination policy for parallel downloads and any uncached image."""
+    budget = DownloadBudget()
+    pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html), open_url=requests.open, budget=budget)
+    return lambda folder: local.Images(folder, None, pre=pre, open_url=requests.open, budget=budget).resolve
+
+
 def fetch(pid, progress=None):
     """Store a web page's article (once)."""
     d = store.pdir(pid)
     if (d / "meta.json").exists() and (d / "source.html").exists():
         return pid
     url = store.read_text(d / "url.txt").strip()
-    data, final, charset = _get(url)
+    requests = PageRequests(url)
+    data, final, charset = _get(url, requests)
     page = data.decode(charset or "utf-8", "replace") if charset else data
     md, html, info = read(page, final)
-    pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html))
+    resolver = image_resolver(html, requests)
     return local.store_doc(pid, html, meta_of(pid, final, info), "source.md", md,
-                           lambda folder: local.Images(folder, None, pre=pre).resolve, sizes=True)
+                           resolver, sizes=True)

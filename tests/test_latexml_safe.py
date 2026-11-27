@@ -67,6 +67,15 @@ class RemovedTest(unittest.TestCase):
 
 
 class KeptTest(unittest.TestCase):
+    def test_the_reader_uses_the_selected_picture_and_link(self):
+        out = cleaned('<img src="figure.png" srcset="large.png 2x">'
+                      '<a href="https://example.org/citation" ping="/count">Reference</a>'
+                      '<img src="urn:example:figure">')
+        self.assertIn('src="figure.png"', out)
+        self.assertIn('href="https://example.org/citation"', out)
+        for unused in ("srcset", "large.png", "ping=", "urn:example:figure"):
+            self.assertNotIn(unused, out)
+
     def test_svg_and_what_is_inside_it(self):
         out = cleaned('<svg width="9" height="9"><g><foreignObject><img src="a.png" width="3" height="3"></foreignObject></g></svg>')
         for kept in ("<svg", "<foreignobject", 'src="a.png"', 'width="3"', 'height="3"'):

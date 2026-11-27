@@ -38,7 +38,10 @@ class Response:
     def read(self, amt=None):
         if self.cut:
             raise http.client.IncompleteRead(self.body[:3])
-        return self.body if amt is None else self.body[:amt]
+        if amt is None:
+            amt = len(self.body)
+        result, self.body = self.body[:amt], self.body[amt:]
+        return result
 
     def geturl(self):
         return self.url
@@ -57,7 +60,7 @@ DROPPED = urllib.error.URLError(ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_R
 class Tries(unittest.TestCase):
     def run_with(self, *answers, **kw):
         waits = []
-        with mock.patch("urllib.request.urlopen", side_effect=list(answers)) as opened, \
+        with mock.patch.object(fetch.PUBLIC, "open", side_effect=list(answers)) as opened, \
                 mock.patch("textfold.fetch.time.sleep", waits.append):
             try:
                 return fetch.urlread("https://arxiv.org/html/2512.23916", **kw), waits, opened.call_count
@@ -67,6 +70,13 @@ class Tries(unittest.TestCase):
     def test_a_dropped_connection_is_asked_again(self):
         got, waits, n = self.run_with(DROPPED, ConnectionResetError(54, "reset"), Response())
         self.assertEqual((got[0], got[1], waits, n), (b"<html>ok</html>", "https://arxiv.org/html/2512.23916v2", [1, 2], 3))
+
+    def test_default_downloads_use_the_public_destination_guard(self):
+        with mock.patch("textfold.web_requests._addresses", return_value=("192.0.2.9",)), \
+                mock.patch("textfold.web_requests._manager") as connection:
+            with self.assertRaises(fetch.DestinationDenied):
+                fetch.urlread("https://document.example/resource")
+        connection.assert_not_called()
 
     def test_a_body_cut_short_or_a_timeout_too(self):
         got, waits, _ = self.run_with(Response(cut=True), TimeoutError("timed out"), Response())
@@ -97,6 +107,17 @@ class Tries(unittest.TestCase):
         got, waits, n = self.run_with(Response(), check=check)
         self.assertEqual((str(got), waits, n), ("web-pdf", [], 1))
 
+    def test_response_and_shared_image_limits(self):
+        got, _, _ = self.run_with(Response(b"words"), limit=4)
+        self.assertIsInstance(got, fetch.ResponseTooLarge)
+        got, _, _ = self.run_with(Response(b"words"), limit=4, truncate=True)
+        self.assertEqual(got[0], b"word")
+        budget = fetch.DownloadBudget(7)
+        got, _, _ = self.run_with(Response(b"word"), budget=budget)
+        self.assertEqual(got[0], b"word")
+        got, _, _ = self.run_with(Response(b"more"), budget=budget)
+        self.assertIsInstance(got, fetch.ResponseTooLarge)
+
 
 class Paper(unittest.TestCase):
     def test_the_html_that_came_is_not_asked_for_again(self):
@@ -112,7 +133,7 @@ class Paper(unittest.TestCase):
                 raise DROPPED
             return Response(abs_page, "https://arxiv.org/abs/2512.23916")
 
-        with tempfile.TemporaryDirectory() as tmp, mock.patch("urllib.request.urlopen", side_effect=answer), \
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("textfold.web_requests.PUBLIC.open", side_effect=answer), \
                 mock.patch("textfold.fetch.time.sleep"):
             with self.assertRaises(fetch.Unreachable):
                 fetch.fetch("2512.23916", Path(tmp))
@@ -129,10 +150,10 @@ class Paper(unittest.TestCase):
 class Page(unittest.TestCase):
     def test_a_wall_still_answers_at_once_and_a_bad_gateway_is_asked_again(self):
         waits = []
-        with mock.patch("urllib.request.urlopen", side_effect=[busy(503)]), mock.patch("textfold.fetch.time.sleep", waits.append):
+        with mock.patch("textfold.web_requests.PageRequests.open", side_effect=[busy(503)]), mock.patch("textfold.fetch.time.sleep", waits.append):
             with self.assertRaisesRegex(ValueError, "web-blocked"):
                 webpage._get("https://example.org/post")
-        with mock.patch("urllib.request.urlopen", side_effect=[busy(502), Response(b"<p>words</p>", "https://example.org/post")]), \
+        with mock.patch("textfold.web_requests.PageRequests.open", side_effect=[busy(502), Response(b"<p>words</p>", "https://example.org/post")]), \
                 mock.patch("textfold.fetch.time.sleep", waits.append):
             self.assertEqual(webpage._get("https://example.org/post")[:2], (b"<p>words</p>", "https://example.org/post"))
         self.assertEqual(waits, [1])

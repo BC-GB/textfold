@@ -87,7 +87,9 @@ class ModelOpening(unittest.TestCase):
              mock.patch.object(models, "save_settings") as save, \
              mock.patch.object(server.engine, "status", return_value={}):
             d = server.models_payload()
-        self.assertEqual(d["selected"], "saved-model")
-        self.assertEqual(d["askModel"], "saved-ask")
-        self.assertTrue({"saved-model", "saved-ask"} <= {m["id"] for m in d["models"]})
+        self.assertIsNone(d["selected"])
+        self.assertIsNone(d["askModel"])
+        self.assertEqual(d["savedModel"], "saved-model")
+        self.assertEqual(d["savedAskModel"], "saved-ask")
+        self.assertTrue({"saved-model", "saved-ask"}.isdisjoint(m["id"] for m in d["models"]))
         save.assert_not_called()

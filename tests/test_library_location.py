@@ -5,6 +5,27 @@ from textfold import storage_settings, store
 from textfold._storage_layout import DirectoryFiles
 
 class Migration(unittest.TestCase):
+    def test_folder_shortcut_stays_inside_the_current_home(self):
+        with mock.patch.object(Path, "home", return_value=self.root):
+            for folder in ("~another-user/library", "~/../library"):
+                with self.subTest(folder=folder), self.assertRaises(storage_settings.Refused) as error:
+                    storage_settings.schedule(self.source, self.home, folder)
+                self.assertEqual(error.exception.code, "path")
+            result = storage_settings.schedule(self.source, self.home, "~/new")
+        self.assertEqual(result["pending"], str(self.target))
+
+    def test_pending_destination_cannot_be_redirected_between_selection_and_startup(self):
+        storage_settings.schedule(self.source, self.home, str(self.target))
+        other = self.root / "other-library"
+        other.mkdir()
+        try:
+            self.target.symlink_to(other, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symbolic links are unavailable: {error}")
+        self.assertEqual(storage_settings.activate(self.source, self.home), self.source)
+        self.assertIn("saved folder changed", storage_settings.load(self.home)["error"])
+        self.assertEqual(list(other.iterdir()), [])
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

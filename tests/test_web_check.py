@@ -155,7 +155,7 @@ class Stored(unittest.TestCase):
         from unittest import mock
         from textfold import capture, local, store
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(store, "DATA", Path(tmp)), \
-                mock.patch.object(local, "prefetch", lambda srcs: {}), mock.patch.object(capture, "_server_url", lambda: None):
+                mock.patch.object(local, "prefetch", lambda srcs, **kw: {}), mock.patch.object(capture, "_server_url", lambda: None):
             read = {"defuddle": {"html": reading(nested=False), "title": "压缩", "words": 400}}
             pid = capture.receive({"format": capture.FORMAT, "version": capture.PROTOCOL, "url": URL, "html": PAGE, "read": read})["paper"]
             got = adapt.stored(pid)

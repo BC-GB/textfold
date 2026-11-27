@@ -385,6 +385,30 @@ describe("clicking the row folds: the pointer without the keyboard", () => {
 describe("the preview panel shows the fold before any reply and with it", () => {
 	const reply = "## Head one\n\n" + "This is a longish paragraph whose point comes first when folded. ".repeat(4);
 
+	test("switching sessions restores only the selected branch's reply and fold level", async () => {
+		const textfold = await load();
+		const branch: unknown[] = [];
+		const mk = makePi({ branch });
+		textfold(mk.pi);
+		mk.handler("session_start")({ reason: "startup" }, mk.ctx);
+		const message = { role: "assistant", content: [{ type: "text", text: "First session reply" }] };
+		mk.handler("message_end")({ message }, mk.ctx);
+		mk.press("alt+3");
+
+		mk.handler("session_start")({ reason: "new" }, mk.ctx);
+		const empty = mk.render("textfold-preview");
+		expect(empty[0]).toContain("Full");
+		expect(empty.slice(2)).toEqual(["…"]);
+
+		branch.push({ type: "message", message }, custom(3),
+			{ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "Planning" }] } },
+			{ type: "message", message: { role: "user", content: "Next question" } });
+		mk.handler("session_start")({ reason: "resume" }, mk.ctx);
+		const resumed = mk.render("textfold-preview");
+		expect(resumed[0]).toContain("Points");
+		expect(resumed.slice(2)).toEqual(["First session reply"]);
+	});
+
 	test("the panel is installed at session start: header for the level read at, and an ellipsis for no reply yet", async () => {
 		const textfold = await load();
 		const mk = makePi({ branch: [] });

@@ -8,6 +8,7 @@ stands in; no model, no network.
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import hashlib
 import json
 import os
@@ -23,7 +24,7 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
-from textfold import agents, llm, models
+from textfold import agents, llm, local_access, models
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -174,7 +175,15 @@ class Probe(Fake):
 
 
 class Catalog(Fake):
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(models, "SETTINGS", self.tmp / "settings.json")
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def settings(self, *rows):
+        for row in rows:
+            local_access.approve_agent(models.SETTINGS.parent, row["command"])
         return {"model": None, "ask_model": None, "ask_effort": None, "efforts": {}, "providers": [], "custom_agents": list(rows)}
 
     def test_ids_of_their_own(self):
@@ -269,16 +278,20 @@ class Routes(unittest.TestCase):
         import socket
         cls.home = Path(tempfile.mkdtemp())
         cls.wrap = script(cls.home / "bin" / "wrap", WRAP)
+        cls.probe_command = (subprocess.list2cmdline([sys.executable, str(cls.wrap), "claude"])
+                             if os.name == "nt" else f'"{cls.wrap}" claude')
+        for command in ("mirasim claude", "mirasim codex", cls.probe_command, "nowhere claude"):
+            local_access.approve_agent(cls.home / ".textfold", command)
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             cls.port = s.getsockname()[1]
-        env = {**os.environ, "HOME": str(cls.home), "USERPROFILE": str(cls.home), "TEXTFOLD_DATA": str(cls.home / "data"),
+        env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(cls.home), "USERPROFILE": str(cls.home), "TEXTFOLD_DATA": str(cls.home / "data"),
                "TEXTFOLD_NO_MODELS": "1", "PYTHONUSERBASE": site.getuserbase()}
         cls.proc = subprocess.Popen([sys.executable, "-m", "textfold", "serve", "--port", str(cls.port)], cwd=ROOT, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(150):
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
+                urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
                 break
             except OSError:
                 time.sleep(0.1)
@@ -292,7 +305,7 @@ class Routes(unittest.TestCase):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=None if body is None else json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urlopen(req, timeout=60) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
@@ -321,9 +334,10 @@ class Routes(unittest.TestCase):
     def test_refused(self):
         self.assertEqual(self.call("/api/agents/save", {"name": "X", "command": "", "protocol": "claude-code", "models": ["a"]})[0], 400)
         self.assertEqual(self.call("/api/agents/save", {"name": "X", "command": "x", "protocol": "gemini", "models": ["a"]})[0], 400)
+        self.assertEqual(self.call("/api/agents/save", {"name": "X", "command": "unapproved", "protocol": "codex", "models": ["a"]})[0], 403)
 
     def test_probe(self):
-        code, r = self.call("/api/agents/probe", {"command": f"{self.wrap} claude", "protocol": "claude-code"})
+        code, r = self.call("/api/agents/probe", {"command": self.probe_command, "protocol": "claude-code"})
         self.assertEqual((code, r["protocol"], len(r["models"])), (200, "claude-code", 4), r)
         code, r = self.call("/api/agents/probe", {"command": "nowhere claude"})
         self.assertEqual(code, 400)

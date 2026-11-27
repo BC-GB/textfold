@@ -1,5 +1,5 @@
 """models.ask_choice and ask_spec: questions are answered with the levels' model at the questions' default reasoning,
-unless the settings choose a model (and a reasoning level) of their own; a choice no longer possible counts as none.
+unless the settings choose a model (and a reasoning level) of their own. An unavailable choice needs a new selection.
 The catalog is a stand-in: nothing is scanned or called.
 
 Run from the repo root:
@@ -11,13 +11,14 @@ from unittest import mock
 from textfold import models
 
 LEVELS = ["off", "low", "medium", "high", "xhigh", "max"]
-CAT = [{"id": "claude/claude-code/sonnet", "name": "Sonnet 5.5", "kind": "agent", "group": "claude-code", "efforts": LEVELS},
-       {"id": "claude/claude-code/opus", "name": "Opus 5.5", "kind": "agent", "group": "claude-code", "efforts": LEVELS},
-       {"id": "openrouter/free", "name": "openrouter/free", "kind": "api", "group": "openrouter", "efforts": []}]
+CAT = [{"id": "claude/claude-code/sonnet", "name": "Sonnet 5.5", "kind": "agent", "group": "claude-code", "efforts": LEVELS, "target": "claude"},
+       {"id": "claude/claude-code/opus", "name": "Opus 5.5", "kind": "agent", "group": "claude-code", "efforts": LEVELS, "target": "claude"},
+       {"id": "openrouter/free", "name": "openrouter/free", "kind": "api", "group": "openrouter", "efforts": [], "target": "router"}]
 
 
 def settings(**kw):
-    return {"model": "claude/claude-code/sonnet", "ask_model": None, "ask_effort": None, "efforts": {}, "providers": [], **kw}
+    return {"model": "claude/claude-code/sonnet", "model_target": "claude", "ask_model": None,
+            "ask_effort": None, "efforts": {}, "providers": [], **kw}
 
 
 class AskModel(unittest.TestCase):
@@ -33,7 +34,7 @@ class AskModel(unittest.TestCase):
         self.assertEqual((spec["id"], spec["effort"]), ("claude/claude-code/sonnet", models.DEFAULT_THINKING["ask"]))
 
     def test_a_stronger_model_reasoning_more(self):
-        spec = models.ask_spec(settings(ask_model="claude/claude-code/opus", ask_effort="high"))
+        spec = models.ask_spec(settings(ask_model="claude/claude-code/opus", ask_model_target="claude", ask_effort="high"))
         self.assertEqual((spec["id"], spec["model"], spec["effort"]), ("claude/claude-code/opus", "opus", "high"))
 
     def test_the_same_model_reasoning_more(self):
@@ -41,8 +42,12 @@ class AskModel(unittest.TestCase):
         self.assertEqual((spec["id"], spec["effort"]), ("claude/claude-code/sonnet", "xhigh"))
 
     def test_a_model_gone_or_a_level_it_has_not(self):
-        self.assertEqual(models.ask_choice(settings(ask_model="codex/codex/gone"), CAT), (None, None))
-        self.assertEqual(models.ask_choice(settings(ask_model="openrouter/free", ask_effort="high"), CAT), ("openrouter/free", None))
+        gone = settings(ask_model="codex/codex/gone", ask_model_target="codex")
+        self.assertEqual(models.ask_choice(gone, CAT), (None, None))
+        with self.assertRaisesRegex(RuntimeError, "choose a model"):
+            models.ask_spec(gone)
+        self.assertEqual(models.ask_choice(settings(ask_model="openrouter/free", ask_model_target="router", ask_effort="high"), CAT),
+                         ("openrouter/free", None))
         self.assertEqual(models.ask_choice(settings(ask_effort="ultra"), CAT), (None, None))   # (not one of Sonnet's)
 
 

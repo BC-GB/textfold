@@ -115,11 +115,16 @@ import traceback
 import urllib.parse
 import urllib.request
 import uuid
+import webbrowser
+from html import escape
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import __version__, adapt, agents, bridges, build, corrections, engine, fetch, fold, ids, langs, library, llm, local, models, news, notes, office, pdf, pdfdoc, pdffigs, pdftext, pipeline, providers, record, store, zotero
+from . import webpage
+from ._storage_layout import DirectoryFiles
+from . import __version__, adapt, agents, bridges, build, chatgpt, corrections, engine, fetch, fold, ids, langs, library, llm, llm_openai, local, local_access, models, news, notes, office, pdf, pdfdoc, pdffigs, pdftext, pipeline, providers, record, store, zotero
 
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "reader.js": "text/javascript",
           "reader.css": "text/css", "i18n.js": "text/javascript", "tutorial.js": "text/javascript", "webmcp.js": "text/javascript",
@@ -130,19 +135,20 @@ VENDOR_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; char
                 ".txt": "text/plain; charset=utf-8", ".wasm": "application/wasm"}
 
 
+@lru_cache(maxsize=8)
+def _bundled_assets(root, extensions, recursive):
+    directory = root.resolve()
+    paths = directory.rglob("*") if recursive else directory.glob("*")
+    return {f.relative_to(directory).as_posix(): f for f in paths
+            if f.suffix in extensions and f.is_file() and f.resolve().is_relative_to(directory)}
+
+
 def vendor_file(rel):
-    """A file of web/vendor by its path under /static/vendor/, or None: nothing outside it, nothing but those kinds."""
-    root = (build.WEB / "vendor").resolve()
-    f = (root / rel).resolve()
-    return f if rel and root in f.parents and f.is_file() and f.suffix in VENDOR_TYPES else None
+    return _bundled_assets(build.WEB / "vendor", tuple(VENDOR_TYPES), True).get(rel)
 
 
 def news_file(name):
-    """A picture of What's new (whatsnew.json: an item's media) by its name under /static/news/, or None: web/news's
-    own pictures, nothing else."""
-    root = (build.WEB / "news").resolve()
-    f = (root / name).resolve()
-    return f if name and f.parent == root and f.is_file() and f.suffix in IMAGE_TYPES else None
+    return _bundled_assets(build.WEB / "news", tuple(IMAGE_TYPES), False).get(name)
 
 
 # Only an explicit refresh contacts local services. Page rendering reads the last results,
@@ -186,21 +192,15 @@ def models_payload():
     with DISCOVERY_LOCK:
         discovery = dict(DISCOVERY)
     cat, provs = models.catalog(s, discovery["live"])
-    # While the agents are still being looked for, or the local services not yet asked, a saved choice missing from the
-    # list is not known to be gone: it shows as saved, and the reader's choice is not switched under them. Once both are
-    # known, one that is gone gives way as a generation's does (models.default_model), so the page names the model the
-    # next generation uses.
-    if agents.STATE["scanning"] or not agents.STATE["scanned_at"] or not discovery["ready"]:
-        for mid in (s.get("model"), s.get("ask_model")):
-            if mid and not any(m["id"] == mid for m in cat):
-                cat.append({"id": mid, "name": mid, "kind": "api", "group": "saved", "efforts": []})
     selected = models.default_model(s, cat)
     ask, ask_effort = models.ask_choice(s, cat)
     name = lambda mid: next((m["name"] for m in cat if m["id"] == mid), mid)
     return {
         "models": cat, "selected": selected, "selectedName": name(selected),
         "askModel": ask, "askEffort": ask_effort, "askName": name(ask) if ask and ask != selected else "",
-        "efforts": s.get("efforts") or {}, "bridge": discovery["bridge"],
+        "savedModel": s.get("model"), "savedAskModel": s.get("ask_model"),
+        "efforts": s.get("efforts") or {}, "bridge": discovery["bridge"], "bridgePackage": bridges.BRIDGE_PACKAGE,
+        "chatgpt": chatgpt.connection.status(),
         "discovery": {k: discovery[k] for k in ("refreshing", "ready", "error")},
         "agents": [{k: a[k] for k in ("runtime", "label", "binary", "path", "version", "runnable", "error")} | {"models": len(a["models"])}
                    for a in agents.STATE["agents"]],
@@ -225,24 +225,25 @@ class Jobs:
     def __init__(self):
         self.items, self.q, self.eq = {}, queue.Queue(), queue.Queue()
         self.stops = {}   # job id -> threading.Event, set when the reader stops it (kept out of the job: it is sent as JSON)
-        self.pending = {}  # files that wait for the engine to be installed: pid -> (file, name, lang)
+        self.pending = {}  # files waiting for the engine: (file, name, lang, authorization at upload)
         for side in (store.DATA / "uploads").glob("*.json"):   # (kept beside each, so a restart forgets none)
             try:
                 w = json.loads(store.read_text(side))
                 f = side.parent / Path(w.get("file") or side.stem + ".pdf").name
                 if f.exists() and not (store.pdir(f.stem) / "meta.json").exists():
-                    self.pending[f.stem] = (str(f), w["name"], w["lang"])
+                    self.pending[f.stem] = (str(f), w["name"], w["lang"], None)
             except (OSError, ValueError, KeyError, AttributeError):
                 pass
         threading.Thread(target=self.work, daemon=True).start()
         threading.Thread(target=self.work_engine, daemon=True).start()
 
     def _new(self, q, **kw):
+        context = models.job_context()
         job = {"id": uuid.uuid4().hex[:10], "kind": "generate", "pid": "", "lang": "", "force": False, "status": "queued",
                "stage": "queued", "done": 0, "total": 0, "error": "", "log": [], "created": time.time(), "finished": None, **kw}
         self.items[job["id"]] = job
         self.stops[job["id"]] = threading.Event()
-        q.put(job["id"])
+        q.put((job["id"], context))
         return job
 
     def _same(self, **kw):   # the same request already waiting or running (and not being stopped) is that job
@@ -261,7 +262,7 @@ class Jobs:
 
     def wait_for_engine(self, pid, file, name, lang):
         """A file kept until the engine is installed (then converted), with a note of its name and language beside it."""
-        self.pending[pid] = (str(file), name, lang)
+        self.pending[pid] = (str(file), name, lang, models.job_context())
         Path(file).with_suffix(".json").write_text(json.dumps({"name": name, "lang": lang, "file": Path(file).name}, ensure_ascii=False), encoding="utf-8")
 
     def read_pdf(self, pid, file, name, lang):
@@ -276,6 +277,7 @@ class Jobs:
         """A document made of notes picked (record.make), on a thread of its own: its model's call waits on the
         network beside any generation. Listed with the jobs, so the sidebar shows it being written; stopped, nothing
         is kept."""
+        context = models.job_context("ask_model")
         job = {"id": uuid.uuid4().hex[:10], "kind": "record", "pid": "", "lang": "", "force": False, "status": "running",
                "stage": "write", "done": 0, "total": 0, "error": "", "log": [], "created": time.time(), "finished": None, "title": title}
         self.items[job["id"]] = job
@@ -297,7 +299,7 @@ class Jobs:
                 job.update(status="error", error=str(e)[:600])
                 job["log"].append(traceback.format_exc()[-2000:])
             job["finished"] = time.time()
-        threading.Thread(target=run, daemon=True).start()
+        threading.Thread(target=context.run, args=(run,), daemon=True).start()
         return job
 
     def install_engine(self):
@@ -370,52 +372,52 @@ class Jobs:
 
     def work(self):
         while True:
-            job = self.items[self.q.get()]
-            if job["status"] == "stopped":
-                continue
-            job["status"] = "running"
-            stop = self.stops[job["id"]]
-            try:
-                try:
-                    spec = models.resolve(None)  # the model chosen in the settings, resolved once per job
-                    job["model"] = spec["id"]
-                except RuntimeError:   # none: the paper is still fetched and parsed, to be read as written
-                    spec = None
-                pipeline.generate(job["pid"], job["lang"], spec, force=job["force"], progress=self._progress(job, stop), log=self._log(job), stop=stop,
-                                  shown=lambda n: job.update(shown=n))   # (a translation's sections the page can show already)
-                job["status"] = "done"
-            except Exception as e:  # shown in the app; the traceback stays in the job log
-                if str(e) == "no-html" and not stop.is_set():
-                    try:   # an arXiv paper without its HTML version: its PDF (the reader's, else arXiv's), read here
-                        if job.get("attach"):
-                            self._fallback(job)
-                        else:
-                            self._pdf_link(job, f"https://arxiv.org/pdf/{job['pid']}")
-                        continue
-                    except Exception:   # arXiv's PDF out of reach too: the app's own sentence for no HTML
-                        pass
-                if str(e) == "web-pdf" and not stop.is_set():
-                    try:
-                        self._pdf_link(job)   # a link to a PDF: the file, as if it had been dropped on the landing
-                        continue
-                    except Exception as e2:
-                        e = e2
-                self._end(job, e, stop)
-                continue
-            job["finished"] = time.time()
-            PAGES.pop(job["pid"], None)
+            job_id, context = self.q.get()
+            context.run(self._work, self.items[job_id])
 
-    def _pdf_link(self, job, url=None):
-        url = url or store.read_text(store.pdir(job["pid"]) / "url.txt").strip()
-        data = fetch.urlread(urllib.request.Request(url, headers=fetch.UA), 90, pdf.LIMIT + 1)[0]
+    def _work(self, job):
+        if job["status"] == "stopped":
+            return
+        job["status"] = "running"
+        stop = self.stops[job["id"]]
+        try:
+            try:
+                spec = models.resolve(None)  # the model chosen in the settings, resolved once per job
+                job["model"] = spec["id"]
+            except RuntimeError:   # none: the paper is still fetched and parsed, to be read as written
+                spec = None
+            pipeline.generate(job["pid"], job["lang"], spec, force=job["force"], progress=self._progress(job, stop), log=self._log(job), stop=stop,
+                              shown=lambda n: job.update(shown=n))   # (a translation's sections the page can show already)
+            job["status"] = "done"
+        except Exception as e:  # shown in the app; the traceback stays in the job log
+            if str(e) == "no-html" and not stop.is_set():
+                try:   # an arXiv paper without its HTML version: its PDF (the reader's, else arXiv's), read here
+                    if job.get("attach"):
+                        self._fallback(job)
+                    else:
+                        self._pdf_link(job, f"https://arxiv.org/pdf/{job['pid']}")
+                    return
+                except Exception:   # arXiv's PDF out of reach too: the app's own sentence for no HTML
+                    pass
+            if isinstance(e, webpage.WebPDF) and not stop.is_set():
+                try:
+                    self._pdf_link(job, e.url, e.requests)   # a link to a PDF: the file, as if it had been dropped on the landing
+                    return
+                except Exception as e2:
+                    e = e2
+            self._end(job, e, stop)
+            return
+        job["finished"] = time.time()
+        PAGES.pop(job["pid"], None)
+
+    def _pdf_link(self, job, url, requests=fetch.PUBLIC):
+        data = fetch.urlread(urllib.request.Request(url, headers=fetch.UA), 90, pdf.LIMIT + 1, open_url=requests.open, truncate=True)[0]
         if data[:5] != b"%PDF-" or len(data) > pdf.LIMIT:
             raise ValueError("not-pdf")
         shutil.rmtree(store.pdir(job["pid"]), ignore_errors=True)   # (only its address was there)
         pid = pdfdoc.pid_of(data)
         name = Path(urllib.parse.urlparse(url).path).name or "document.pdf"
-        f = store.DATA / "uploads" / f"{pid}.pdf"
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_bytes(data)
+        f = stage_upload(data, pid, "pdf")
         job["finished"] = time.time()
         if (store.pdir(pid) / "meta.json").exists():   # read before
             f.unlink()
@@ -443,48 +445,55 @@ class Jobs:
 
     def work_engine(self):
         while True:
-            job = self.items[self.eq.get()]
-            if job["status"] == "stopped":
-                continue
-            job["status"] = "running"
-            stop = self.stops[job["id"]]
-            progress, log = self._progress(job, stop), self._log(job)
-            try:
-                if job["kind"] == "install":
-                    engine.install(progress, log, stop)
-                    waiting, self.pending = self.pending, {}
-                    for pid, (file, name, lang) in waiting.items():
-                        self.convert(pid, file, name, lang)
-                else:
-                    out = store.DATA / "uploads" / f"{job['pid']}-{job['tier']}"
-                    try:
-                        engine.convert(job["file"], out, job["tier"], progress, log, stop)
-                    except Exception:   # a file the engine could not read: TextFold's own reader, if it has one
-                        if stop.is_set() or not office.reads(engine.kind_of(job["file"])):
-                            raise
-                        log("the engine could not read this file: TextFold reads it itself")
-                        office.convert(job["file"], out)
-                    langs = self.superseded(job["pid"]) if job["replace"] else []
-                    pdfdoc.store_pdf(job["pid"], out, pdfdoc.read_output(out), job["name"], job["tier"], replace=job["replace"])
-                    src = store.pdir(job["pid"]) / pdfdoc.kept_name(job["pid"], job["file"])   # the file itself, kept
-                    if not src.exists():
-                        src.write_bytes(Path(job["file"]).read_bytes())
-                    shutil.rmtree(out, ignore_errors=True)
-                    if Path(job["file"]).parent == store.DATA / "uploads":
-                        Path(job["file"]).unlink(missing_ok=True)
-                        Path(job["file"]).with_suffix(".json").unlink(missing_ok=True)
-                    PAGES.pop(job["pid"], None)
-                    job["readable"] = True
-                    job["next"] = self.submit(job["pid"], job["lang"] or None, False)["id"]   # its levels, in the other queue
-                    base = store.text_lang(job["pid"])
-                    for lang in langs:   # converted again: its other languages made again of the new text (its own first)
-                        if lang not in (base, job["lang"] or base):
-                            self.submit(job["pid"], lang, False)
-                job.update(status="done", finished=time.time())
-            except Exception as e:
-                if job["kind"] == "convert":   # what the engine wrote before it failed
-                    shutil.rmtree(store.DATA / "uploads" / f"{job['pid']}-{job['tier']}", ignore_errors=True)
-                self._end(job, e, stop)
+            job_id, context = self.eq.get()
+            context.run(self._work_engine, self.items[job_id])
+
+    def _work_engine(self, job):
+        if job["status"] == "stopped":
+            return
+        job["status"] = "running"
+        stop = self.stops[job["id"]]
+        progress, log = self._progress(job, stop), self._log(job)
+        try:
+            if job["kind"] == "install":
+                engine.install(progress, log, stop)
+                waiting, self.pending = self.pending, {}
+                with chatgpt.reader(None):
+                    for pid, (file, name, lang, context) in waiting.items():
+                        if context is not None:
+                            context.run(self.convert, pid, file, name, lang)
+                        else:
+                            self.convert(pid, file, name, lang)
+            else:
+                out = store.DATA / "uploads" / f"{job['pid']}-{job['tier']}"
+                try:
+                    engine.convert(job["file"], out, job["tier"], progress, log, stop)
+                except Exception:   # a file the engine could not read: TextFold's own reader, if it has one
+                    if stop.is_set() or not office.reads(engine.kind_of(job["file"])):
+                        raise
+                    log("the engine could not read this file: TextFold reads it itself")
+                    office.convert(job["file"], out)
+                langs = self.superseded(job["pid"]) if job["replace"] else []
+                pdfdoc.store_pdf(job["pid"], out, pdfdoc.read_output(out), job["name"], job["tier"], replace=job["replace"])
+                src = store.pdir(job["pid"]) / pdfdoc.kept_name(job["pid"], job["file"])   # the file itself, kept
+                if not src.exists():
+                    src.write_bytes(Path(job["file"]).read_bytes())
+                shutil.rmtree(out, ignore_errors=True)
+                if Path(job["file"]).parent == store.DATA / "uploads":
+                    Path(job["file"]).unlink(missing_ok=True)
+                    Path(job["file"]).with_suffix(".json").unlink(missing_ok=True)
+                PAGES.pop(job["pid"], None)
+                job["readable"] = True
+                job["next"] = self.submit(job["pid"], job["lang"] or None, False)["id"]   # its levels, in the other queue
+                base = store.text_lang(job["pid"])
+                for lang in langs:   # converted again: its other languages made again of the new text (its own first)
+                    if lang not in (base, job["lang"] or base):
+                        self.submit(job["pid"], lang, False)
+            job.update(status="done", finished=time.time())
+        except Exception as e:
+            if job["kind"] == "convert":   # what the engine wrote before it failed
+                shutil.rmtree(store.DATA / "uploads" / f"{job['pid']}-{job['tier']}", ignore_errors=True)
+            self._end(job, e, stop)
 
     def list(self):
         now = time.time()
@@ -495,6 +504,19 @@ def _named(headers):
     """A dropped file's name and the language to read it in, from the request's headers."""
     lang = headers.get("X-Lang")   # (none: the language it is written in)
     return Path(unquote(headers.get("X-Name") or "document.pdf")).name[:200] or "document.pdf", lang if lang in langs.LANGS else None
+
+
+def stage_upload(data, pid, extension):
+    if not store.valid_id(pid) or (extension != "pdf" and extension not in engine.FILES):
+        raise ValueError("Invalid upload destination")
+    files = DirectoryFiles(store.DATA)
+    key = f"uploads/{pid}.{extension}"
+    path = files.path(key)
+    if path.is_symlink():
+        raise ValueError("The upload destination is a symbolic link")
+    if not path.exists():
+        files.write(key, data)
+    return path
 
 
 def take_file(jobs, data, headers):
@@ -509,12 +531,9 @@ def take_file(jobs, data, headers):
     if not ext:
         return {"error": "not-supported"}, 400
     pid = pdfdoc.pid_of(data, ext)
-    f = store.DATA / "uploads" / f"{pid}.{ext}"
-    f.parent.mkdir(parents=True, exist_ok=True)
     if (store.pdir(pid) / "meta.json").exists():   # this file, converted before
         return {"job": jobs.submit(pid, lang, False), "via": "file"}, 200
-    if not f.exists():
-        f.write_bytes(data)
+    f = stage_upload(data, pid, ext)
     if engine.where():
         return {"job": jobs.convert(pid, f, name, lang), "via": "file"}, 200
     if office.reads(ext):
@@ -545,10 +564,7 @@ def take_pdf(jobs, data, headers):
     if models.load_settings().get("pdf_online") is False:
         refs = []
     pid = pdfdoc.pid_of(data)
-    f = store.DATA / "uploads" / f"{pid}.pdf"
-    f.parent.mkdir(parents=True, exist_ok=True)
-    if not f.exists():
-        f.write_bytes(data)
+    f = stage_upload(data, pid, "pdf")
     if (store.pdir(pid) / "meta.json").exists():   # this file, converted before
         f.unlink()
         return {"job": jobs.submit(pid, lang, False), "via": "pdf"}, 200
@@ -643,14 +659,57 @@ def addressed_here(host):
     return bool(m) and m.group(1) in LOCAL_NAMES
 
 
-def make_handler(jobs):
+def from_other_site(headers):
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if site and site not in ("same-origin", "none"):
+        return True
+    here = "http://" + headers["Host"]
+    return any(not llm_openai.same_origin(value, here)
+               for name in ("Origin", "Referer") if (value := headers.get(name)))
+
+
+def provider_secret(body, base, previous):
+    """A saved credential belongs to the origin where the user entered it."""
+    if body.get("minted"):
+        if not llm_openai.same_origin(base, bridges.AUTH_URL):
+            raise ValueError("An OpenRouter authorization can only be used with OpenRouter.")
+        secret = bridges.minted()
+        if not secret:
+            raise ValueError("OpenRouter authorization has expired. Connect again.")
+        return secret
+    if body.get("api_key"):
+        return body["api_key"]
+    if previous.get("api_key") and llm_openai.same_origin(base, previous.get("base")):
+        return previous["api_key"]
+    return ""
+
+
+def oauth_return_path(back):
+    """The reader supplies its own pathname and query to reopen after consent."""
+    if not back.startswith("/") or back.startswith("//") or "\\" in back or re.search(r"[\x00-\x20\x7f]", back):
+        return "/"
+    return back
+
+
+def make_handler(jobs, access_key):
+    if not local_access.valid(access_key):
+        raise ValueError("A local access key is required")
+    engine_settings = threading.Lock()
+
     class Handler(BaseHTTPRequestHandler):
-        def send(self, code, body, ctype="application/json; charset=utf-8", cache="no-store"):
+        def send(self, code, body, ctype="application/json; charset=utf-8", cache="no-store", challenge=False):
             data = body if isinstance(body, bytes) else body.encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", cache)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if challenge:
+                self.send_header("WWW-Authenticate", 'Basic realm="TextFold for this session", charset="UTF-8"')
+            if ctype.partition(";")[0].strip().lower() == "text/html":
+                self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             try:
                 self.wfile.write(data)
@@ -661,10 +720,33 @@ def make_handler(jobs):
             self.send(code, json.dumps(obj, ensure_ascii=False))
 
         def do_GET(self):
+            with chatgpt.reader(self.headers.get(chatgpt.READER_HEADER)):
+                self.get()
+
+        def get(self):
             if not addressed_here(self.headers.get("Host")):   # (DNS rebinding: the module's docstring)
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
+            auth = local_access.credentials(self.headers.get("Authorization"), access_key)
+            openrouter = re.fullmatch(r"/oauth/openrouter/([a-f0-9]{64})", u.path)
+            oauth = openrouter or u.path in (chatgpt.CALLBACK, chatgpt.CALLBACK + "/done")
+            # Electron starts its main window from a local splash file, which Chromium treats as another site.
+            native_page = (auth == "bearer" and self.headers.get("Sec-Fetch-Mode") == "navigate"
+                           and self.headers.get("Sec-Fetch-Dest") == "document"
+                           and (u.path == "/" or re.fullmatch(r"/p/[\w.-]+", u.path)))
+            if not oauth and not native_page and from_other_site(self.headers):
+                return self.json({"error": "forbidden"}, 403)
             try:
+                if u.path == chatgpt.CALLBACK:
+                    return self.chatgpt_callback(u.query)
+                if u.path == chatgpt.CALLBACK + "/done":
+                    return self.send(200, '<!doctype html><meta charset="utf-8"><title>TextFold</title>'
+                                     '<main><h1>Return to TextFold</h1><p>You can close this browser tab.</p></main>',
+                                     "text/html; charset=utf-8")
+                if not openrouter and not auth:
+                    return self.send(401, '{"error":"TextFold local access required"}', challenge=True)
+                if u.path == "/api/chatgpt/status":
+                    return self.json(chatgpt.connection.status())
                 if u.path == "/":
                     return self.send(200, landing_page(jobs), "text/html; charset=utf-8")
                 if u.path == "/notes":
@@ -675,22 +757,27 @@ def make_handler(jobs):
                     return self.json(bridges.bridge_status(fresh=True))
                 if u.path == "/api/openrouter/minted":   # the app, waiting while the system browser authorises
                     return self.json({"minted": bool(bridges.minted())})
-                if u.path == "/oauth/openrouter":   # OpenRouter sends the reader back here with a code
-                    code = (parse_qs(u.query).get("code") or [""])[0]
+                if openrouter:   # OpenRouter returns to the unique callback chosen by this authenticated session
+                    if self.headers["Host"].rpartition(":")[2] != str(self.server.server_address[1]):
+                        return self.json({"error": "misdirected"}, 421)
+                    codes = parse_qs(u.query, max_num_fields=12).get("code") or []
+                    code = codes[0] if len(codes) == 1 else ""
                     desktop = bridges.for_desktop()
-                    key, err, back = bridges.openrouter_finish(code)
-                    back = back if back.startswith("/") else "/"
+                    key, err, back = bridges.openrouter_finish(code, openrouter[1])
+                    if back is None:
+                        return self.json({"error": "Invalid or expired OpenRouter callback."}, 400)
+                    back = oauth_return_path(back)
                     to = f"{back}#or-minted" if key else f"{back}#or-failed={quote(err or '')}"
                     if desktop:   # this tab is the system browser's: the app, waiting for the key, takes it from here
                         page = (f'<!doctype html><meta charset="utf-8"><title>TextFold</title><body style="font-family:system-ui;'
                                 f'display:grid;place-items:center;height:100vh;margin:0;background:#FAF9F7;color:#1f1d1a">'
                                 f'<div style="text-align:center;line-height:1.7"><h2>{"✓" if key else "✕"} OpenRouter</h2>'
-                                f'<p style="color:#6b6558">{"回到 TextFold 即可，本页可以关闭。<br>Return to TextFold; this tab can be closed." if key else (err or "")}</p></div>')
+                                f'<p style="color:#6b6558">{"回到 TextFold 即可，本页可以关闭。<br>Return to TextFold; this tab can be closed." if key else escape(err or "")}</p></div>')
                         return self.send(200, page, "text/html; charset=utf-8")
-                    page = (f'<!doctype html><meta charset="utf-8"><title>TextFold</title><body style="font-family:system-ui;'
-                            f'display:grid;place-items:center;height:100vh;margin:0;background:#FAF9F7;color:#1f1d1a">'
-                            f'<div style="text-align:center"><h2>{"✓ OpenRouter" if key else "OpenRouter ✕"}</h2></div>'
-                            f'<script>location.replace({json.dumps(to)})</script>')
+                    # Start a same-origin navigation from this page after the external OAuth callback.
+                    target = escape(quote(to, safe="/?#%&=+:;,@!$'()*~-._"))
+                    page = (f'<!doctype html><meta charset="utf-8"><title>TextFold</title>'
+                            f'<meta http-equiv="refresh" content="0; url={target}"><a href="{target}">Return to TextFold</a>')
                     return self.send(200, page, "text/html; charset=utf-8")
                 m = re.fullmatch(r"/p/([\w.-]+)/img/([\w.-]+)", u.path)   # a paper's picture (a drawing stays inside its page)
                 if m and store.valid_id(m.group(1)):
@@ -708,11 +795,12 @@ def make_handler(jobs):
                         return
                     library.opened(m.group(1))
                     return self.send(200, reader_page(m.group(1)), "text/html; charset=utf-8")
-                if u.path.startswith("/static/") and u.path[8:] in STATIC:
-                    data = (build.WEB / u.path[8:]).read_bytes()
+                static = next((name for name in STATIC if u.path == "/static/" + name), None) if u.path.startswith("/static/") else None
+                if static:
+                    data = (build.WEB / static).read_bytes()
                     version = hashlib.sha256(data).hexdigest()
                     cache = "private, max-age=31536000, immutable" if parse_qs(u.query).get("v") == [version] else "no-store"
-                    return self.send(200, data, STATIC[u.path[8:]] + "; charset=utf-8", cache=cache)
+                    return self.send(200, data, STATIC[static] + "; charset=utf-8", cache=cache)
                 if u.path.startswith("/static/vendor/"):
                     f = vendor_file(unquote(u.path[len("/static/vendor/"):]))
                     if f:
@@ -819,15 +907,50 @@ def make_handler(jobs):
             except Exception as e:
                 self.json({"error": str(e)}, 500)
 
+        def chatgpt_callback(self, query):
+            port = self.server.server_address[1]
+            if self.headers["Host"] != f"127.0.0.1:{port}":
+                return self.json({"error": "misdirected"}, 421)
+            try:
+                values = parse_qs(query, keep_blank_values=True, max_num_fields=16)
+            except ValueError:
+                return self.json({"error": "Invalid ChatGPT sign-in response."}, 400)
+            if any(len(items) != 1 for items in values.values()):
+                return self.json({"error": "Invalid ChatGPT sign-in response."}, 400)
+            if not chatgpt.connection.finish({k: v[0] for k, v in values.items()}, port):
+                return self.json({"error": "This ChatGPT sign-in is no longer pending in TextFold."}, 400)
+            self.send_response(303)
+            self.send_header("Location", chatgpt.CALLBACK + "/done")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def do_POST(self):
+            with chatgpt.reader(self.headers.get(chatgpt.READER_HEADER)):
+                self.post()
+
+        def post(self):
             if not addressed_here(self.headers.get("Host")):
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
             origin = self.headers.get("Origin")
-            if origin and urlparse(origin).hostname not in ("localhost", "127.0.0.1"):
+            if self.headers.get("Sec-Fetch-Site") == "cross-site" or (
+                origin and not llm_openai.same_origin(origin, "http://" + self.headers["Host"])
+            ):
                 return self.json({"error": "forbidden"}, 403)  # another site may not drive this server
+            auth = local_access.credentials(self.headers.get("Authorization"), access_key)
+            if not auth:
+                return self.json({"error": "TextFold local access required"}, 401)
+            if auth == "basic" and not origin:
+                return self.json({"error": "A browser request must be made from TextFold."}, 403)
             try:
-                size = int(self.headers.get("Content-Length") or 0)
+                try:
+                    size = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    return self.json({"error": "invalid content length"}, 400)
+                if size < 0:
+                    return self.json({"error": "invalid content length"}, 400)
                 m = re.fullmatch(r"/api/pdf/([\w.-]+)", u.path)
                 if m:   # a paper's PDF, dropped on the reader's pane: the file's bytes, not JSON
                     if not (store.valid_id(m.group(1)) and (store.pdir(m.group(1)) / "meta.json").exists()):
@@ -842,12 +965,24 @@ def make_handler(jobs):
                 if size > 12_000_000:   # a Markdown file is far smaller; this is a request gone wrong
                     return self.json({"error": "too-large"}, 413)
                 body = json.loads(self.rfile.read(size) or b"{}")
+                if u.path.startswith("/api/chatgpt/"):
+                    if not origin or not chatgpt.reader_key():
+                        return self.json({"error": "Open this control in your local TextFold tab."}, 403)
+                    return self.chatgpt_action(u.path, body)
                 s = models.load_settings()
                 if u.path == "/api/storage":
                     try:
-                        return self.json(store.schedule_storage(body.get("path"), bool(body.get("cancel")), body.get("mode", "copy")))
+                        mode = body.get("mode", "copy")
+                        if body.get("cancel"):
+                            return self.json(store.schedule_storage(cancel=True))
+                        if mode not in ("copy", "existing"):
+                            raise ValueError("Choose copy or existing library")
+                        action = "library-existing" if mode == "existing" else "library-copy"
+                        folder = local_access.approved_folder(store.DATA, action, body.get("path"), access_key)
+                        return self.json(store.schedule_storage(folder, mode=mode))
                     except (OSError, ValueError) as error:   # (why, in the reader's language: its code)
-                        return self.json({"error": str(error), "code": getattr(error, "code", "")}, 400)
+                        code = getattr(error, "code", "")
+                        return self.json({"error": str(error), "code": code}, 403 if code == "folder_approval" else 400)
 
                 if u.path == "/api/generate":
                     lang = body.get("lang") or None   # (none: the language it is written in, its own levels)
@@ -885,18 +1020,22 @@ def make_handler(jobs):
                         zotero.apply(pid)   # (read at once, or read before: its record now; else once converted)
                     return self.json({**reply, "name": got["name"]}, code)
                 if u.path == "/api/engine/install":   # (with a path: into that folder, chosen in Settings)
-                    if body.get("path"):
-                        if jobs._same(kind="install") or engine.where():
-                            return self.json({"error": "busy"}, 409)
-                        try:
-                            engine.choose(body["path"])
-                        except ValueError as error:   # (why, in the reader's language: its code)
-                            return self.json({"error": str(error), "code": getattr(error, "code", "")}, 400)
-                    return self.json(jobs.install_engine())
+                    with engine_settings:
+                        if body.get("path"):
+                            if jobs._same(kind="install") or engine.where():
+                                return self.json({"error": "busy"}, 409)
+                            try:
+                                folder = local_access.approved_folder(store.DATA, "engine-install", body["path"], access_key)
+                                engine.choose(folder)
+                            except (OSError, ValueError) as error:   # (why, in the reader's language: its code)
+                                code = getattr(error, "code", "")
+                                return self.json({"error": str(error), "code": code}, 403 if code == "folder_approval" else 400)
+                        return self.json(jobs.install_engine())
                 if u.path == "/api/engine/remove":
-                    if any(j["kind"] in ("install", "convert") and j["status"] in ("queued", "running") for j in jobs.items.values()):
-                        return self.json({"error": "busy"}, 409)
-                    return self.json(engine.uninstall())
+                    with engine_settings:
+                        if any(j["kind"] in ("install", "convert") and j["status"] in ("queued", "running") for j in jobs.items.values()):
+                            return self.json({"error": "busy"}, 409)
+                        return self.json(engine.uninstall())
                 if u.path == "/api/convert":   # a stored PDF (or picture) converted again, at another tier (its levels follow)
                     pid, tier = str(body.get("paper") or ""), str(body.get("tier") or "accurate")
                     src = pdfdoc.source_of(pid) if pid.startswith(("pdf-", "doc-")) and store.valid_id(pid) else None
@@ -1102,18 +1241,27 @@ def make_handler(jobs):
                         return self.json({"error": str(e)}, 400)
                     except Exception as e:  # the model failed: the note keeps its question, the reader can ask again
                         return self.json({"error": str(e)[:600]}, 502)
-                if u.path == "/api/models/select" and body.get("task") == "ask":
-                    s["ask_model"] = body.get("model") or None
-                    s["ask_effort"] = body.get("effort") or None
-                    models.save_settings(s)
-                    return self.json(models_payload())
                 if u.path == "/api/models/select":
-                    s["model"] = body.get("model") or None
-                    if "effort" in body and s["model"]:
+                    field = "ask_model" if body.get("task") == "ask" else "model"
+                    chosen = body.get("model") or None
+                    target = None
+                    if chosen:
+                        with DISCOVERY_LOCK:
+                            live = DISCOVERY["live"]
+                        catalog, _ = models.catalog(s, live)
+                        row = next((m for m in catalog if m["id"] == chosen), None)
+                        if row is None or row["target"] != body.get("target"):
+                            return self.json({"error": "Model or provider changed. Refresh Settings and choose it again."}, 409)
+                        target = row["target"]
+                    s[field] = chosen
+                    s[f"{field}_target"] = target
+                    if field == "ask_model":
+                        s["ask_effort"] = body.get("effort") or None
+                    elif "effort" in body and chosen:
                         if body["effort"]:
-                            s["efforts"][s["model"]] = body["effort"]
+                            s["efforts"][chosen] = body["effort"]
                         else:
-                            s["efforts"].pop(s["model"], None)
+                            s["efforts"].pop(chosen, None)
                     models.save_settings(s)
                     return self.json(models_payload())
                 if u.path == "/api/models/refresh":
@@ -1126,14 +1274,20 @@ def make_handler(jobs):
                         agents.STATE["scanning"] = False
                     return self.json(models_payload())
                 if u.path == "/api/agents/probe":
+                    command = self.approved_agent(body.get("command", ""))
+                    if command is None:
+                        return
                     try:
-                        return self.json(agents.probe_custom(body.get("command", ""), body.get("protocol")))
+                        return self.json(agents.probe_custom(command, body.get("protocol")))
                     except Exception as e:
                         return self.json({"error": str(e)[:600]}, 400)
                 if u.path == "/api/agents/save":
                     command, protocol = (body.get("command") or "").strip(), body.get("protocol")
                     if not command or protocol not in agents.PROTOCOLS:
                         return self.json({"error": "a custom agent needs a command and the agent it speaks as"}, 400)
+                    command = self.approved_agent(command)
+                    if command is None:
+                        return
                     name = (body.get("name") or "").strip() or command.split()[0].split("/")[-1].split("\\")[-1]
                     have = s.get("custom_agents") or []
                     key = body.get("key") if any(a.get("key") == body.get("key") for a in have) else None
@@ -1158,8 +1312,11 @@ def make_handler(jobs):
                     models.save_settings(s)
                     return self.json(models_payload())
                 if u.path == "/api/providers/probe":
-                    key = (bridges.minted() if body.get("minted") else None) or body.get("api_key") or \
-                        next((p.get("api_key") for p in s["providers"] if p["key"] == body.get("key")), "")
+                    previous = next((p for p in s["providers"] if p["key"] == body.get("key")), {})
+                    try:
+                        key = provider_secret(body, body.get("base", ""), previous)
+                    except ValueError as e:
+                        return self.json({"error": str(e)}, 400)
                     preset = next((p for p in providers.PRESETS + [models.ANTHROPIC_PRESET] if p["id"] == body.get("preset")), None)
                     if preset and preset.get("fixed"):  # MiniMax and Anthropic have no /models a key can list
                         found = [{"id": i} for i in preset["fixed"]]
@@ -1182,13 +1339,19 @@ def make_handler(jobs):
                         providers.name_of((body.get("base") or "").strip())
                     key = body.get("key") or re.sub(r"[^a-z0-9]+", "-", f"{preset}-{name}".lower()).strip("-")
                     old = next((p for p in s["providers"] if p["key"] == key), {})
-                    row = {"key": key, "preset": preset, "name": name, "base": (body.get("base") or "").strip().rstrip("/"),
-                           "api_key": (bridges.take_minted() if body.get("minted") else None) or body.get("api_key") or old.get("api_key", ""),
+                    base = (body.get("base") or "").strip().rstrip("/")
+                    try:
+                        secret = provider_secret(body, base, old)
+                    except ValueError as e:
+                        return self.json({"error": str(e)}, 400)
+                    row = {"key": key, "preset": preset, "name": name, "base": base, "api_key": secret,
                            "models": [{"id": i} for i in (body.get("models") or [])][:providers.MAX_MODELS]}
                     if preset == "anthropic":
                         row["protocol"] = "anthropic"
                     s["providers"] = ([p for p in s["providers"] if p["key"] != key] + [row])[-providers.MAX_PROVIDERS:]
                     models.save_settings(s)
+                    if body.get("minted"):
+                        bridges.clear_minted(secret)
                     return self.json(models_payload())
                 if u.path == "/api/providers/remove":
                     s["providers"] = [p for p in s["providers"] if p["key"] != body.get("key")]
@@ -1210,7 +1373,16 @@ def make_handler(jobs):
                 if u.path == "/api/settings/test":
                     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
                     try:
-                        spec = models.ask_spec() if body.get("task") == "ask" else models.resolve(body.get("model"))   # (questions: their model, reasoning as set)
+                        if body.get("task") == "ask":
+                            spec = models.ask_spec(s)
+                        elif body.get("model"):
+                            catalog, provs = models.catalog(s)
+                            row = next((m for m in catalog if m["id"] == body["model"]), None)
+                            if not row:
+                                raise RuntimeError(models.NO_MODEL)
+                            spec = models._resolve(row["id"], s, provs, kind=row["kind"])
+                        else:
+                            spec = models.resolve(s=s)
                         t0 = time.time()
                         with tempfile.TemporaryDirectory() as tmp:
                             rec, _ = llm.call('Return JSON {"ok": true}.', schema, spec, Path(tmp), force=True, timeout=180)
@@ -1220,6 +1392,38 @@ def make_handler(jobs):
                 self.json({"error": "not found"}, 404)
             except Exception as e:
                 self.json({"error": str(e)}, 500)
+
+        def approved_agent(self, command):
+            approved = local_access.approved_agent(models.SETTINGS.parent, command)
+            if approved is None:
+                self.json({"error": "Approve the custom agent command on this computer before using it.",
+                           "code": "agent-approval"}, 403)
+            return approved
+
+        def chatgpt_action(self, path, body):
+            connection = chatgpt.connection
+            try:
+                if path == "/api/chatgpt/start":
+                    url = connection.start(self.server.server_address[1], consent=body.get("consent") is True,
+                                           new_account=body.get("newAccount") is True)
+                    def launch():
+                        try:
+                            webbrowser.open(url)
+                        except (OSError, webbrowser.Error):
+                            pass
+                    threading.Thread(target=launch, daemon=True).start()
+                    return self.json({**connection.status(), "url": url})
+                if path == "/api/chatgpt/retry":
+                    connection.retry()
+                elif path == "/api/chatgpt/disconnect":
+                    connection.clear()
+                else:
+                    return self.json({"error": "not found"}, 404)
+                return self.json(connection.status())
+            except chatgpt.SignInError as error:
+                return self.json({"error": str(error)}, 409)
+            except OSError:
+                return self.json({"error": "TextFold could not save its local ChatGPT registration."}, 500)
 
         def log_message(self, *args):
             pass
@@ -1238,19 +1442,15 @@ def _quiet_children():
     subprocess.Popen.__init__ = quiet
 
 
-def announce(port):
+def announce(port, access_key):
     """server.json in the data folder: where this server is, for the programs that work with it (an editor's plugin, a
     script), which could not tell the desktop app's free port from a server run by hand on 3017. Replaced whole, so a
     program reading it never sees half of it. A server ended outright (on Windows, the app's server.kill(), which sends
     no signal) leaves it behind: its url then answers nothing."""
-    f = store.DATA / "server.json"
-    f.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_name(f"server.json.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps({"format": "textfold/server", "version": 1, "url": f"http://127.0.0.1:{port}", "port": port,
-                               "pid": os.getpid(), "textfold": __version__,
-                               "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2), encoding="utf-8")
-    os.replace(tmp, f)
-    return f
+    record = {"format": "textfold/server", "version": 1, "url": f"http://127.0.0.1:{port}", "port": port,
+              "pid": os.getpid(), "textfold": __version__,
+              "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    return local_access.publish(store.DATA, record, access_key)
 
 
 def withdraw(f):
@@ -1263,15 +1463,19 @@ def withdraw(f):
         pass
 
 
-def serve(port=3017):
+def serve(port=3017, *, scan_agents=True, open_browser=False):
+    access_key = os.environ.pop("TEXTFOLD_LOCAL_ACCESS", None) or local_access.key()
+    if not local_access.valid(access_key):
+        raise ValueError("Invalid local access key")
     if os.name == "nt":
         _quiet_children()
     store.initialize_storage(log=lambda line: print(line, flush=True))   # (a library moved in Settings: copied now, once)
     jobs = Jobs()
     # look for the agents on this computer while the server comes up, and erase what was deleted 30 days ago
-    threading.Thread(target=agents.scan, kwargs={"log": print}, daemon=True).start()
+    if scan_agents:
+        threading.Thread(target=agents.scan, kwargs={"log": print}, daemon=True).start()
     threading.Thread(target=store.empty_trash, daemon=True).start()
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(jobs))
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(jobs, access_key))
     port = httpd.server_address[1]   # (the one given, or the free one the system chose for 0)
 
     def killed(signum, frame):
@@ -1280,15 +1484,21 @@ def serve(port=3017):
         withdraw(f)
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
-    f = announce(port)
+    f = announce(port, access_key)
     try:
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, killed)
-        print(f"TextFold on http://localhost:{port}")
+        print(f"TextFold on http://127.0.0.1:{port}", flush=True)
+        if os.environ.get("TEXTFOLD_RUNTIME_ID") != "desktop":
+            print("Browser access: use the name 'textfold' and the password from 'textfold local-access'.", flush=True)
+        if open_browser:
+            import webbrowser
+            threading.Thread(target=webbrowser.open, args=(f"http://127.0.0.1:{port}",), daemon=True).start()
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        httpd.server_close()
         withdraw(f)
         for stop in list(jobs.stops.values()):   # (^C: the agents' calls under way end too, and Python's exit need not wait for them)
             stop.set()

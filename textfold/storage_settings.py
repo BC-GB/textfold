@@ -104,11 +104,38 @@ def load(home):
     return value
 
 
+def selected_folder(value):
+    """Resolve an absolute folder or a shortcut under this user's home."""
+    path = Path(value.strip()) if isinstance(value, str) else Path()
+    if path.parts[:1] == ("~",):
+        home = Path.home().resolve()
+        path = (home / path.relative_to("~")).resolve()
+        if path.is_relative_to(home):
+            return path
+    elif path.is_absolute():
+        return path.resolve()
+    raise Refused("path", "Enter an absolute folder path")
+
+
+def recorded_folder(value):
+    """Paths saved by the folder chooser are already absolute and resolved."""
+    path = Path(value)
+    try:
+        if path.is_absolute() and path.resolve() == path:
+            return path
+    except (OSError, RuntimeError):
+        pass
+    raise Refused("path", "The saved folder changed or could not be opened. Choose it again.")
+
+
 def active_path(default, home):
     try:
-        return Path(load(home).get("path") or default).expanduser().resolve()
+        saved = load(home).get("path")
+        if saved:
+            return recorded_folder(saved)
     except (OSError, ValueError, TypeError):
-        return Path(default).resolve()
+        pass
+    return Path(default).resolve()
 
 
 def _save(home, value):
@@ -126,12 +153,8 @@ def status(root, home):
 
 
 def _target(source, target, mode="copy"):
-    if not isinstance(target, str) or not target.strip():
-        raise Refused("path", "Enter an absolute folder path")
-    path = Path(target.strip()).expanduser()
-    if not path.is_absolute():
-        raise Refused("path", "The library folder must be an absolute path")
-    path, source = path.resolve(), Path(source).resolve()
+    path = recorded_folder(target) if isinstance(target, Path) else selected_folder(target)
+    source = Path(source).resolve()
     if path == source:
         return path
     if path.is_relative_to(source) or source.is_relative_to(path):
@@ -194,12 +217,14 @@ def _digest(path):
 
 def copy_library(source, destination):
     """Resumable verified copy. Conflicting files always stop the migration."""
-    source, destination = Path(source).resolve(), Path(destination).resolve()
+    source, destination = recorded_folder(source), recorded_folder(destination)
     if source == destination:
         return
     if destination.is_relative_to(source) or source.is_relative_to(destination):
         raise ValueError("Overlapping library folders")
     marker = destination / MARKER
+    if marker.is_symlink():
+        raise Refused("links", "Migration does not follow symbolic links")
     if marker.exists():
         journal = json.loads(marker.read_text(encoding="utf-8"))
         if not isinstance(journal, dict) or journal.get("source") != str(source) or journal.get("version") not in (1, 2, 3):
@@ -290,11 +315,13 @@ def activate(default, home, log=None):
             config = load(home)
         except (OSError, ValueError, TypeError):
             return Path(default).resolve()  # preserve the damaged file for recovery
-        if not config.get("pending"):
-            return active_path(default, home)
-        source = Path(config.get("path") or default).resolve()
-        target = Path(config["pending"]).resolve()
+        source = Path(default).resolve()
         try:
+            if config.get("path"):
+                source = recorded_folder(config["path"])
+            if not config.get("pending"):
+                return source
+            target = recorded_folder(config["pending"])
             _check_other_server(default)
             if config.get("pending_mode", "copy") == "existing":
                 _target(source, str(target), "existing")

@@ -1,6 +1,8 @@
 """Shared assets can be reused between documents, but never under a stale content version."""
+from _local_test import AUTH, KEY
 import hashlib
 import http.client
+import json
 import re
 import shutil
 import tempfile
@@ -9,6 +11,8 @@ import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+
+from bs4 import BeautifulSoup
 
 from textfold import build, local, server, store
 
@@ -40,7 +44,7 @@ class AssetCache(unittest.TestCase):
         server.PAGES.clear()
         self.addCleanup(server.PAGES.clear)
         self.pid = local.import_text("# Cache fixture\n\nA paragraph that needs no model.\n")
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(Jobs()))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(Jobs(), KEY))
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self.close)
@@ -52,7 +56,7 @@ class AssetCache(unittest.TestCase):
 
     def get(self, path, host="localhost"):
         c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_port, timeout=10)
-        c.request("GET", path, headers={"Host": host})
+        c.request("GET", path, headers={**AUTH, "Host": host})
         r = c.getresponse()
         out = r.status, dict(r.getheaders()), r.read()
         c.close()
@@ -88,6 +92,8 @@ class AssetCache(unittest.TestCase):
                 status, headers, body = self.get(path)
                 self.assertEqual(status, 200)
                 self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(headers["Content-Security-Policy"], "frame-ancestors 'none'")
+                self.assertEqual(headers["X-Frame-Options"], "DENY")
                 urls = re.findall(r'(?:src|href)="(/static/(?!vendor/)[^"]+)"', body.decode())
                 self.assertEqual(set(urls), {self.url(name) for name in expected})
                 self.assertIn(b'/static/vendor/fonts/fonts.css"', body)
@@ -117,6 +123,18 @@ class AssetCache(unittest.TestCase):
         status, headers, _ = self.get(self.url("app.js"), host="attacker.example")
         self.assertEqual(status, 421)
         self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_document_words_do_not_become_template_fields(self):
+        doc = store.assemble(self.pid)
+        title = "Using {{HEAD}} and {{DATA}} in <example> templates"
+        doc["meta"]["title"] = title
+        for app in (True, False):
+            with self.subTest(app=app), mock.patch.object(build, "fonts_head", return_value=""):
+                soup = BeautifulSoup(build.page(doc, app=app), "lxml")
+                self.assertEqual(soup.title.string, title)
+                data = soup.find("script", id="paper-data").string
+                self.assertNotIn("<", data)
+                self.assertEqual(json.loads(data)["meta"]["title"], title)
 
     def test_vendor_policy_and_standalone_export_are_unchanged(self):
         folder = build.WEB / "vendor" / "fonts"

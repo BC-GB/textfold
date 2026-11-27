@@ -15,6 +15,10 @@ cannot act on your computer, and so that it cannot steer the model that folds it
   of every request that writes). It answers only requests addressed to this computer's own names (localhost,
   127.0.0.1, [::1]), so a site that points its own domain at this computer (DNS rebinding) cannot read the library
   either.
+- Reading the library or calling its API also requires a per-launch local credential. The desktop supplies it to its
+  own reader origin. Its discovery file is private to the operating-system user on Unix and the credential inside it
+  is encrypted for that user on Windows. Local processes with full access under the same OS account still share that
+  account's access. A custom agent command requires separate approval in the desktop dialog or from the local terminal.
 - Text from Europe PMC, bioRxiv, medRxiv, Wikipedia, GitHub READMEs, Markdown files, web pages and converted PDFs
   passes through an allowlist before the reader shows it: no script, no event handler, no `javascript:` link, no
   frame, no form, no embedded object.
@@ -27,8 +31,7 @@ cannot act on your computer, and so that it cannot steer the model that folds it
 - The PDF engine runs in a Python of its own. TextFold calls MinerU's command line only, which sends nothing anywhere;
   not its document library, which keeps an index of your files and asks to send usage data.
 
-A known gap: arXiv's HTML is shown as LaTeXML wrote it, without the allowlist. Rules made for LaTeXML (its drawings
-and sizes must survive them) are in progress.
+arXiv's LaTeXML also passes through the reader's markup and resource checks.
 
 ## In scope
 
