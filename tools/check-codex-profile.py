@@ -119,34 +119,23 @@ if os.name == "nt":
     raise SystemExit(0)
 
 with tempfile.TemporaryDirectory() as directory:
-    root = Path(directory)
+    root = Path(directory).resolve()
     scratch = root / "scratch"
     scratch.mkdir()
     inside = scratch / "allowed.txt"
     outside = root / "protected.txt"
-    inside.write_text("scratch fixture")
-    outside.write_text("another fixture")
-    runtimes = {Path(sys.executable).resolve().parent, executable.resolve().parent}
-    runtime_rules = ",".join(json.dumps(str(path)) + '="read"' for path in sorted(runtimes))
-    profile = 'permissions.textfold-document.filesystem={":minimal"="read",":workspace_roots"="read",' + runtime_rules + '}'
-    check = """from pathlib import Path
-import sys
-assert Path('allowed.txt').read_text() == 'scratch fixture'
-try:
-    Path('allowed.txt').write_text('must stay read-only')
-except OSError:
-    pass
-else:
-    raise SystemExit('The profile allowed a write in the scratch directory')
-try:
-    Path(sys.argv[1]).read_text()
-except OSError:
-    pass
-else:
-    raise SystemExit('The profile allowed a read of the outside fixture')
+    inside.write_text("scratch fixture\n")
+    outside.write_text("another fixture\n")
+    runtime = json.dumps(str(executable.resolve().parent))
+    profile = 'permissions.textfold-document.filesystem={":minimal"="read",":workspace_roots"="read",' + runtime + '="read"}'
+    check = """
+IFS= read -r content < "$1"
+test "$content" = "scratch fixture" || exit 2
+if (printf 'must stay read-only' > "$1") 2>/dev/null; then exit 3; fi
+if (IFS= read -r content < "$2") 2>/dev/null; then exit 4; fi
 """
     subprocess.run([str(executable), "sandbox", "-P", "textfold-document", "-C", str(scratch),
                     "-c", profile, "-c", "permissions.textfold-document.network.enabled=false",
-                    "--", sys.executable, "-I", "-S", "-c", check, str(outside)],
+                    "--", "/bin/sh", "-c", check, "fixture-check", str(inside), str(outside)],
                    timeout=60, check=True)
 print("The scratch fixture was read-only and the separate fixture was denied.")
