@@ -92,8 +92,9 @@ with tempfile.TemporaryDirectory() as directory:
     outside = root / "protected.txt"
     inside.write_text("scratch fixture")
     outside.write_text("another fixture")
-    runtime = json.dumps(str(Path(sys.executable).resolve().parent))
-    profile = 'permissions.textfold-document.filesystem={":minimal"="read",":workspace_roots"="read",' + runtime + '="read"}'
+    runtimes = {Path(sys.executable).resolve().parent, executable.resolve().parent}
+    runtime_rules = ",".join(json.dumps(str(path)) + '="read"' for path in sorted(runtimes))
+    profile = 'permissions.textfold-document.filesystem={":minimal"="read",":workspace_roots"="read",' + runtime_rules + '}'
     check = """from pathlib import Path
 import sys
 assert Path('allowed.txt').read_text() == 'scratch fixture'
@@ -110,8 +111,9 @@ except OSError:
 else:
     raise SystemExit('The profile allowed a read of the outside fixture')
 """
+    backend = ["-c", 'windows.sandbox="elevated"'] if os.name == "nt" else []
     subprocess.run([str(executable), "sandbox", "-P", "textfold-document", "-C", str(scratch),
-                    "-c", profile, "-c", "permissions.textfold-document.network.enabled=false",
+                    "-c", profile, "-c", "permissions.textfold-document.network.enabled=false", *backend,
                     "--", sys.executable, "-I", "-S", "-c", check, str(outside)],
                    timeout=60, check=True)
 print("The scratch fixture was read-only and the separate fixture was denied.")
