@@ -49,8 +49,9 @@ npm run dist:mac:x64  # Intel, on an Intel Mac or on Apple silicon (its Python r
 npm run dist:win      # Windows, on Windows: the setup .exe
 ```
 
-`npm run payload` (run by each) downloads a standalone CPython 3.12 for the system (python-build-standalone),
-installs `requirements.txt` into it and copies `textfold/` (the reader's pages inside it) beside it, in
+`npm run payload` downloads the hash-verified standalone CPython 3.12 for the target and installs the wheels
+in its platform lockfile. Intel Mac builds compile the pinned cryptography and OpenSSL sources with Xcode
+command-line tools and the Rust `x86_64-apple-darwin` target. The build copies `textfold/` beside Python in
 `desktop/payload/`. Build outside a synced folder (Dropbox, iCloud Drive), or have it skip `desktop/node_modules`,
 `desktop/payload` and `desktop/out` (several hundred MB).
 
@@ -77,6 +78,8 @@ are the run's artifacts, and a version may be given to the app alone: two such b
 update from one to the other.
 
 ## Signing and notarization
+
+The GitHub workflow builds and tests the Python payload on a separate runner before the macOS packaging step receives signing credentials.
 
 The Developer ID certificate and the Apple account are the ones ThoughtDAG's desktop build uses; nothing is tied
 to one app. The repository's secrets:
