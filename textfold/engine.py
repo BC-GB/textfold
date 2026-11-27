@@ -101,10 +101,12 @@ def choose(folder):
 def legacy():
     """Where PaperFold installed it (kept there: 3.4 GB is not moved)."""
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "PaperFold" / "engine"
-    if sys.platform == "win32":
-        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PaperFold" / "engine"
-    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "paperfold" / "engine"
+        base = Path.home() / "Library" / "Application Support" / "PaperFold"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "PaperFold"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "paperfold"
+    return base.resolve() / "engine"
 
 
 def _bin(e, name):
@@ -140,7 +142,7 @@ def _owned(e):
 
 def where():
     """The installed engine's folder, or None: the one recorded, or one installed before a folder was recorded."""
-    return next((e for e in (target(), store.app_data() / "engine", legacy()) if _ready(e)), None)
+    return next((e for e in (target(), store.app_data().resolve() / "engine", legacy()) if _ready(e)), None)
 
 
 def _env(e):
