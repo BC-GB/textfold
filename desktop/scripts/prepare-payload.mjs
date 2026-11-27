@@ -7,11 +7,13 @@
 // (tkinter and its Tcl/Tk, the test suite, IDLE) are left out: less to sign, a smaller app.
 //
 //   node scripts/prepare-payload.mjs                  for this computer
-//   node scripts/prepare-payload.mjs darwin x64       an Intel Mac's, on Apple silicon too (its Python runs under Rosetta)
+//   node scripts/prepare-payload.mjs darwin x64       an Intel Mac's, with the x86_64 Rust target and Xcode command line tools
 //   PBS_URL=<https url> PBS_SHA256=<trusted sha256> node scripts/...     a given build
 // A Windows payload is made on Windows: the packages are installed by the Python it ships.
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pythonArchive, pythonVersion, unpackPythonArchive } from './python-archive.mjs';
 import { fileURLToPath } from 'node:url';
@@ -40,16 +42,33 @@ run(['-I', '-S', '-c',
   'sys.exit(0 if sys.version_info[:2] == floor[:2] and sys.version_info[:3] >= floor else "Unexpected Python version for desktop payload")',
   pythonVersion], { stdio: 'inherit' });
 
-// The Anthropic API's SDK too: pip leaves it to those who want it (requirements.txt), but a person who picks the
-// Anthropic API in the app's Settings has no pip to install it with (#14)
-const APP_ONLY = ['anthropic>=1.15,<2'];
-
-console.log('installing TextFold\'s packages…');
-const requirements = WIN
-  ? ['--index-url', 'https://pypi.org/simple', '--only-binary=:all:', '--require-hashes', '-r', path.join(desktop, 'requirements-win-x64.txt')]
-  : ['-r', path.join(root, 'requirements.txt'), ...APP_ONLY];
-run(['-m', 'pip', 'install', '--no-cache-dir', '--disable-pip-version-check', '--no-warn-script-location', ...requirements],
-  { stdio: 'inherit', env: { ...process.env, PYTHONNOUSERSITE: '1' } });
+let lockFile = path.join(desktop, `requirements-${WIN ? 'win' : 'mac'}-${arch}.txt`);
+let wheelDir;
+try {
+  if (platform === 'darwin' && arch === 'x64') {
+    wheelDir = mkdtempSync(path.join(os.tmpdir(), 'textfold-mac-crypto-'));
+    const script = path.join(desktop, 'scripts', 'build-mac-intel-crypto.sh');
+    const args = [script, py, wheelDir, path.join(desktop, 'requirements-mac-x64-crypto-build.txt')];
+    if (process.arch === 'x64') {
+      execFileSync('/bin/bash', args, { stdio: 'inherit' });
+    } else {
+      execFileSync('arch', ['-x86_64', '/bin/bash', ...args], { stdio: 'inherit' });
+    }
+    const wheels = readdirSync(wheelDir).filter((name) => /^cryptography-50\.0\.2-.*-macosx_.*_x86_64\.whl$/.test(name));
+    if (wheels.length !== 1) throw new Error('Expected one cryptography 50.0.2 wheel for Intel macOS');
+    const digest = createHash('sha256').update(readFileSync(path.join(wheelDir, wheels[0]))).digest('hex');
+    const locked = readFileSync(lockFile, 'utf8');
+    lockFile = path.join(wheelDir, 'requirements.txt');
+    writeFileSync(lockFile, `${locked}cryptography==50.0.2 --hash=sha256:${digest}\n`);
+  }
+  console.log('Installing locked TextFold packages…');
+  const localWheel = wheelDir ? ['--find-links', wheelDir] : [];
+  run(['-I', '-m', 'pip', '--isolated', 'install', '--no-cache-dir', '--disable-pip-version-check', '--no-warn-script-location',
+    '--index-url', 'https://pypi.org/simple', '--only-binary=:all:', '--require-hashes', ...localWheel, '-r', lockFile],
+  { stdio: 'inherit' });
+} finally {
+  if (wheelDir) rmSync(wheelDir, { recursive: true, force: true });
+}
 
 // what the server never uses
 const stdlib = WIN ? path.join(payload, 'python', 'Lib')
