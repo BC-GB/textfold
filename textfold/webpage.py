@@ -72,18 +72,28 @@ def _get(url, requests=None):
         raise
 
 
+def _visibility_filter(root, keep_browser_notes):
+    """Remove elements hidden in HTML/CSS; a snapshot's browser markers stay only while finding its hover notes."""
+    # (one a browser's snapshot marked as not shown is left for _hover_marks: a note on its mark, or out after)
+    gone = [el for el in root.iter() if isinstance(el.tag, str) and (
+        el.get("aria-hidden") == "true" or el.tag in ("template", "noscript")
+        or el.get("data-tf-zero-size") is not None
+        or (el.get("data-tf-css-hidden") is not None and not keep_browser_notes)
+        or (el.get("data-tf-css-hidden") is None and (el.get("hidden") is not None
+            or HIDDEN_STYLE.search(el.get("style") or "") or HIDDEN_CLASS.search(el.get("class") or ""))))]
+    for el in gone:
+        if el.getparent() is None:
+            el.clear()
+        else:
+            el.drop_tree()
+
+
 def visible(page, url):
     """The page as its reader sees it: hidden elements removed, links and pictures as full addresses."""
     from lxml import html as lhtml
     root = lhtml.fromstring(page)
     root.make_links_absolute(url, resolve_base_href=True)
-    # (one a browser's snapshot marked as not shown is left for _hover_marks: a note on its mark, or out after)
-    gone = [el for el in root.iter() if isinstance(el.tag, str) and (el.get("aria-hidden") == "true" or el.tag in ("template", "noscript") or (
-        not el.get("data-tf-css-hidden") and (el.get("hidden") is not None or HIDDEN_STYLE.search(el.get("style") or "")
-                                              or HIDDEN_CLASS.search(el.get("class") or ""))))]
-    for el in gone:
-        if el.getparent() is not None:
-            el.drop_tree()
+    _visibility_filter(root, keep_browser_notes=True)
     return root
 
 
@@ -685,6 +695,9 @@ def read_view(view, page, final):
         info["title"] = view["title"].strip()[:300]
     root = lhtml.fragment_fromstring(view["html"], create_parent="div")
     root.make_links_absolute(final, resolve_base_href=False)
+    # Reading engines are not a visibility boundary. Recheck their fragment, including the browser's computed-style
+    # markers, before its words can meet the threshold, enter candidate comparison, or be stored for a model.
+    _visibility_filter(root, keep_browser_notes=False)
     for a in root.iter("a"):   # (a place on the page, a footnote's mark: there again)
         if (a.get("href") or "").startswith(final + "#"):
             a.set("href", a.get("href")[len(final):])

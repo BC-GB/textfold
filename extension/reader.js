@@ -3,10 +3,11 @@
 // view), both in vendor/. A browser's own reading view cannot be asked for what it read; these are what such views
 // run. The snapshot is read rather than the tab, so that what its shadow roots and frames hold is read too, and what
 // the browser did not show is known (data-tf-css-hidden): such an element hanging on a mark (1, [12], *) is a note
-// shown on hover, and becomes a footnote either reader keeps; the rest of them go. TextFold chooses between the two
-// readings (textfold/capture.py), and reads the snapshot itself when neither will do. A formula the page's MathJax
-// drew is read from its source, which background.js asked MathJax for. Run in the tab's page (the service worker has
-// no DOM): self.tfRead(html, url) -> {defuddle, readability, notes, formulas, errors}.
+// shown on hover, and becomes a footnote either reader keeps; the rest of them go. Zero-size words
+// (data-tf-zero-size) always go. TextFold chooses between the two readings (textfold/capture.py), and reads the
+// snapshot itself when neither will do. A formula the page's MathJax drew is read from its source, which background.js
+// asked MathJax for. Run in the tab's page (the service worker has no DOM): self.tfRead(html, url) -> {defuddle,
+// readability, notes, formulas, errors}.
 (() => {
   const MARK = /^(?:\[?(?:\d{1,3}[a-z]?|[a-z]|[*†‡§¶⊕]{1,3})\]?|\(\d{1,3}\))$/i;   // 1, [10], 3a, *, †, (2)
   const BLOCK = 'p, li, dd, dt, td, th, figcaption, blockquote, h1, h2, h3, h4, h5, h6';
@@ -33,6 +34,8 @@
   // what the browser did not show: a note on its mark becomes a footnote (its mark a link to it, its words in a
   // footnote list just after the mark's paragraph, which both readers know); the rest goes
   function hiddenOut(doc) {
+    // Zero-size words are never hover notes: remove them before the note-marker heuristic can preserve them.
+    for (const el of [...doc.querySelectorAll('[data-tf-zero-size]')]) el.remove();
     const named = new Map();
     for (const el of doc.querySelectorAll('[aria-describedby]')) {
       for (const id of el.getAttribute('aria-describedby').split(/\s+/)) if (id && !named.has(id)) named.set(id, el);

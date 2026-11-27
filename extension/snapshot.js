@@ -2,12 +2,13 @@
 // the reader asks for it (background.js), and what TextFold's own tests run in a browser. Shadow roots are spelled out
 // in place, their slots filled with what is assigned to them (a closed one too, where the browser lets an extension
 // open it); an element the browser does not show (display none, visibility hidden, opacity 0) is marked
-// data-tf-css-hidden, for TextFold to read as a note when it hangs on a mark and to leave out otherwise; an iframe is a
-// marker (<!--TF-FRAME-k-->) with its address, which the caller fills with that frame's own serialization. Scripts and
-// styles are left out, but for JSON-LD, which says what the page is. Nothing is sent from here: the value of this
-// script is the snapshot, {url, title, html}.
+// data-tf-css-hidden, for TextFold to read as a note when it hangs on a mark and to leave out otherwise. Zero-size text
+// is marked data-tf-zero-size and always left out. An iframe is a marker (<!--TF-FRAME-k-->) with its address, which
+// the caller fills with that frame's own serialization. Scripts and styles are left out, but for JSON-LD, which says
+// what the page is. Nothing is sent from here: the value of this script is the snapshot, {url, title, html}.
 (() => {
   const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
+  const TEXT_ONLY = new Set(['select', 'optgroup', 'option', 'textarea', 'title', 'xmp', 'noembed', 'noframes', 'plaintext']);
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const q = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
   const shadow = (el) => {   // (an extension may open a closed one; a page's own script sees the open ones)
@@ -33,7 +34,15 @@
     return s;
   };
   function ser(n, body) {
-    if (n.nodeType === 3) return esc(n.data);
+    if (n.nodeType === 3) {
+      const box = n.parentElement || (n.parentNode && n.parentNode.host);
+      if (body && box && n.data.trim() && parseFloat(getComputedStyle(box).fontSize) === 0) {
+        // Markup is text inside these elements, so omit their zero-size words rather than serialize a marker as words.
+        if (TEXT_ONLY.has(box.localName)) return '';
+        return `<span data-tf-zero-size="1">${esc(n.data)}</span>`;
+      }
+      return esc(n.data);
+    }
     if (n.nodeType !== 1) return '';
     const tag = n.localName;
     // Keep the article, its diagrams and button labels. Editor contents and form state are private to the live page.

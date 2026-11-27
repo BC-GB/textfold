@@ -165,6 +165,50 @@ class ReadingView(unittest.TestCase):
         self.assertIn("ltx_role_footnote", doc)   # (Defuddle's footnote, in its sentence)
         self.assertIn("The gauges at the river office.", doc)
 
+    def test_hidden_reading_view_words_do_not_count_or_survive(self):
+        shown = " ".join(f"shown{k}" for k in range(90))
+        hidden = " ".join(f"MODEL-INSTRUCTION-{k}" for k in range(100))
+        cases = ('style="font-size:0"', 'data-tf-zero-size="1"', 'data-tf-css-hidden="1"',
+                 'class="sr-only"', 'aria-hidden="true"')
+        for attr in cases:
+            with self.subTest(attr=attr):
+                view = {"html": f"<p>{shown}<span {attr}>{hidden}</span></p>", "words": 190}
+                html, _ = webpage.read_view(view, PAGE, "https://press.example.org/rivers")
+                self.assertIn("shown89", html)
+                self.assertNotIn("MODEL-INSTRUCTION", html)
+
+        marked = {"html": f'<p><span>*</span><span data-tf-zero-size="1">{hidden}</span> {shown}</p>', "words": 191}
+        html, _ = webpage.read_view(marked, PAGE, "https://press.example.org/rivers")
+        self.assertNotIn("MODEL-INSTRUCTION", html)   # (zero-size words beside a mark do not become a footnote)
+
+        too_short = {"html": f'<p>{"shown " * 40}<span style="font-size:0">{hidden}</span></p>', "words": 140}
+        with self.assertRaisesRegex(ValueError, "web-notext"):
+            webpage.read_view(too_short, PAGE, "https://press.example.org/rivers")
+
+    def test_hidden_words_cannot_make_a_reading_candidate(self):
+        hidden = " ".join(f"MODEL-INSTRUCTION-{k}" for k in range(100))
+        poisoned = {"defuddle": {"html": f'<p>Subscribe.</p><p data-tf-css-hidden="1">{hidden}</p>',
+                                  "title": "Rivers", "words": 101}}
+        how, html, _, view, md = capture.reading_of(poisoned, PAGE, "https://press.example.org/rivers")
+        self.assertEqual(how, "textfold")
+        self.assertIsNone(view)
+        self.assertIsNotNone(md)
+        self.assertNotIn("MODEL-INSTRUCTION", html)
+
+    def test_fallback_compares_only_filtered_words(self):
+        defuddle = " ".join(f"defuddle{k}" for k in range(90))
+        readability = " ".join(f"readability{k}" for k in range(100))
+        hidden = " ".join(f"MODEL-INSTRUCTION-{k}" for k in range(100))
+        readings = {
+            "defuddle": {"html": f"<p>{defuddle}</p>", "words": 90},
+            "readability": {"html": f'<p>{readability}</p><p style="font-size:0">{hidden}</p>', "words": 200},
+        }
+        with mock.patch("textfold.adapt.choose", side_effect=RuntimeError("cannot compare")):
+            how, html, _, _, _ = capture.reading_of(readings, PAGE, "https://press.example.org/rivers")
+        self.assertEqual(how, "defuddle")
+        self.assertIn("defuddle89", html)
+        self.assertNotIn("MODEL-INSTRUCTION", html)
+
     def test_a_reference_list_taken_for_footnotes_stays_a_list(self):
         view = {"html": f'<p>{WORDS} {WORDS} As the gauges show <a href="#b0010">[2]</a>.</p><h2>References</h2>'
                         '<div id="footnotes"><ol><li id="fn:1"><p>Gauge, A. (2020). Spring floods. '
@@ -192,13 +236,18 @@ class ReadingView(unittest.TestCase):
         self.assertIn('<math display="block"><mi>z</mi></math>', html)
 
     def test_kept_from_the_reading_view(self):
-        r = capture.receive(dict(SNAP, html=PRESS, read=READ))
+        hidden = '<p style="font-size:0">MODEL-INSTRUCTION ' + ("hidden " * 100) + "</p>"
+        read = {**READ, "defuddle": {**READ["defuddle"], "html": VIEW + hidden, "words": 260}}
+        r = capture.receive(dict(SNAP, html=PRESS, read=read))
         d = store.pdir(r["paper"])
         meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual((meta["reader"], meta["title"]), ("defuddle", "Rivers"))
-        self.assertEqual((d / "article.html").read_text(encoding="utf-8"), VIEW)
+        article = (d / "article.html").read_text(encoding="utf-8")
+        self.assertNotIn("MODEL-INSTRUCTION", article)
+        self.assertIn("Abstract", article)
         self.assertFalse((d / "source.md").exists())
         html = (d / "source.html").read_text(encoding="utf-8")
+        self.assertNotIn("MODEL-INSTRUCTION", html)
         self.assertIn("ltx_role_footnote", html)
         self.assertIn('src="img/01-fig1.png"', html)
         self.assertIn("ltx_title", html)

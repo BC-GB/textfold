@@ -126,7 +126,8 @@ def reading_of(read, html, url):
     got = {}
     for name, view in webpage.views_of(read).items():
         try:
-            got[name] = (*webpage.read_view(view, html, url), view["html"], None)
+            article, info = webpage.read_view(view, html, url)
+            got[name] = (article, info, article, None)
         except ValueError:   # (web-notext: too few words once the site's bits are out)
             pass
     try:
@@ -144,7 +145,15 @@ def reading_of(read, html, url):
                     for k, (h, i, _, _) in got.items()}
             how, _ = adapt.choose(html, url, docs)
         except Exception:   # (the check could not be made: the views by their words, as before)
-            how = webpage.view_of(read)[0] or "textfold"
+            # Fall back by the filtered articles' words, never the reading engines' pre-filter counts.
+            safe = {}
+            for name, (article, _, _, _) in got.items():
+                if name not in webpage.VIEWS:
+                    continue
+                text = re.sub(r"<[^>]+>", " ", article)
+                count = len(text.split()) + round(len(re.findall(r"[぀-ヿ㐀-鿿가-힯]", text)) / 2)
+                safe[name] = {"html": article, "words": max(webpage.MIN_WORDS, count)}
+            how = webpage.view_of(safe)[0] or "textfold"
             how = how if how in got else next(iter(got))
     return (how, *got[how])
 
@@ -183,7 +192,7 @@ def receive(msg):
         resolver = webpage.image_resolver(read, webpage.PageRequests(url))
         local.store_doc(pid, read, meta, "snapshot.html", html, resolver, sizes=True)
         if view:
-            (d / "article.html").write_text(view, encoding="utf-8")   # (as the reading view gave it)
+            (d / "article.html").write_text(view, encoding="utf-8")   # (the reading view after the visibility filter)
         else:
             (d / "source.md").write_text(md, encoding="utf-8")
     there = _server_url()
