@@ -40,6 +40,14 @@ def browser_password(secret):
     return hmac.new(secret.encode("ascii"), b"TextFold browser password", hashlib.sha256).hexdigest()
 
 
+def show_browser_password(secret):
+    """Deliver the requested credential to the operating system console."""
+    with open("CONOUT$" if os.name == "nt" else "/dev/tty", "w", encoding="ascii") as console:
+        if not console.isatty():
+            raise OSError("An interactive console is required")
+        console.write(browser_password(secret) + "\n")
+
+
 def credentials(header, secret):
     """Check each client against its own credential."""
     scheme, _, value = (header or "").partition(" ")

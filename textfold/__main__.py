@@ -166,7 +166,10 @@ def main():
         session = local_access.discover(store.DATA)
         if not session:
             sys.exit("Start TextFold using the same library before requesting its browser password.")
-        return print(local_access.browser_password(session[1]))
+        try:
+            return local_access.show_browser_password(session[1])
+        except OSError:
+            sys.exit("Open a local interactive terminal to view the TextFold browser password.")
     if sys.argv[1:] == ["approve-local-agent"]:
         from . import local_access, models
         if sys.stdin.isatty():

@@ -7,12 +7,27 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
-from textfold import local_access, server
+from textfold import __main__ as cli, local_access, server
 
 
 class AccessRecord(unittest.TestCase):
+    def test_local_access_sends_the_password_only_to_the_console(self):
+        secret = local_access.key()
+        terminal = mock_open()
+        terminal.return_value.isatty.return_value = True
+        with patch.object(cli.sys, "argv", ["textfold", "local-access"]), \
+                patch.object(cli.sys, "stdout") as stdout, patch.object(cli.sys, "stderr") as stderr, \
+                patch.object(local_access, "discover", return_value=("http://127.0.0.1:3017", secret)), \
+                patch.object(local_access, "open", terminal, create=True):
+            stdout.isatty.return_value = True
+            cli.main()
+        terminal.assert_called_once_with("CONOUT$" if os.name == "nt" else "/dev/tty", "w", encoding="ascii")
+        terminal.return_value.write.assert_called_once_with(local_access.browser_password(secret) + "\n")
+        stdout.write.assert_not_called()
+        stderr.write.assert_not_called()
+
     def test_record_is_bound_to_this_process_and_exact_loopback_origin(self):
         secret = local_access.key()
         url = "http://127.0.0.1:3017"

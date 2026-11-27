@@ -104,6 +104,19 @@ def load(home):
     return value
 
 
+def selected_folder(value):
+    """Resolve an absolute folder or a shortcut under this user's home."""
+    path = Path(value.strip()) if isinstance(value, str) else Path()
+    if path.parts[:1] == ("~",):
+        home = Path.home().resolve()
+        path = (home / path.relative_to("~")).resolve()
+        if path.is_relative_to(home):
+            return path
+    elif path.is_absolute():
+        return path.resolve()
+    raise Refused("path", "Enter an absolute folder path")
+
+
 def recorded_folder(value):
     """Paths saved by the folder chooser are already absolute and resolved."""
     path = Path(value)
@@ -140,12 +153,7 @@ def status(root, home):
 
 
 def _target(source, target, mode="copy"):
-    if not isinstance(target, str) or not target.strip():
-        raise Refused("path", "Enter an absolute folder path")
-    path = Path(target.strip()).expanduser()
-    if not path.is_absolute():
-        raise Refused("path", "The library folder must be an absolute path")
-    path, source = path.resolve(), Path(source).resolve()
+    path, source = selected_folder(target), Path(source).resolve()
     if path == source:
         return path
     if path.is_relative_to(source) or source.is_relative_to(path):

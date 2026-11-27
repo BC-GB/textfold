@@ -22,10 +22,12 @@ const child = spawn(executable, ['--remote-debugging-port=0', '--disable-gpu'], 
 
 let socket;
 let launchError;
+let nextRequest = 0;
 child.on('error', (error) => { launchError = error; });
 
 async function waitFor(label, read) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
     if (launchError) throw launchError;
     if (child.exitCode !== null) throw new Error('The installed app exited before it was ready');
     try {
@@ -37,6 +39,34 @@ async function waitFor(label, read) {
     await pause(200);
   }
   throw new Error('Timed out waiting for ' + label);
+}
+
+function evaluate(expression, timeout = 15000) {
+  const id = ++nextRequest;
+  return new Promise((resolve, reject) => {
+    if (socket.readyState !== WebSocket.OPEN) {
+      reject(new Error('The installed renderer disconnected'));
+      return;
+    }
+    const receive = (event) => {
+      const response = JSON.parse(event.data);
+      if (response.id !== id) return;
+      clearTimeout(timer);
+      socket.removeEventListener('message', receive);
+      if (response.error || response.result?.exceptionDetails) {
+        const detail = response.result?.exceptionDetails?.exception?.description || response.error?.message || '';
+        reject(new Error('The installed renderer failed. ' + detail.split('\n')[0]));
+      } else {
+        resolve(response.result.result.value);
+      }
+    };
+    const timer = setTimeout(() => {
+      socket.removeEventListener('message', receive);
+      reject(new Error('The installed renderer did not respond'));
+    }, timeout);
+    socket.addEventListener('message', receive);
+    socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
+  });
 }
 
 try {
@@ -61,33 +91,22 @@ try {
     socket.addEventListener('error', reject, { once: true });
   });
 
-  const result = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('The renderer did not finish the fixture')), 15000);
-    socket.addEventListener('message', (event) => {
-      const response = JSON.parse(event.data);
-      if (response.id !== 1) return;
-      clearTimeout(timer);
-      if (response.error || response.result?.exceptionDetails) {
-        const detail = response.result?.exceptionDetails?.exception?.description || response.error?.message || '';
-        reject(new Error('The installed renderer could not open the fixture. ' + detail.split('\n')[0]));
-      } else {
-        resolve(response.result.result.value);
-      }
+  // The debugger can publish the target URL before navigation and authentication have completed.
+  await waitFor('the authenticated reader', () => evaluate(`(${String(async (address) => {
+    if (location.href !== address + '/' || document.readyState !== 'complete') return false;
+    return (await fetch('/api/papers', { signal: AbortSignal.timeout(1000) })).ok;
+  })})(${JSON.stringify(origin)})`, 1500));
+
+  const result = await evaluate(`(${String(async () => {
+    const imported = await fetch('/api/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'fixture.md', text: '# Windows fixture\n\nA sample paragraph.' }),
     });
-    socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: {
-      awaitPromise: true,
-      returnByValue: true,
-      expression: "(" + String(async () => {
-        const imported = await fetch('/api/import', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'fixture.md', text: '# Windows fixture\n\nA sample paragraph.' }),
-        });
-        if (!imported.ok) return { status: imported.status };
-        const doc = await imported.json();
-        const page = await fetch('/p/' + encodeURIComponent(doc.paper));
-        return { status: page.status, title: (await page.text()).includes('Windows fixture') };
-      }) + ")()" } }));
-  });
+    if (!imported.ok) return { status: imported.status };
+    const doc = await imported.json();
+    const page = await fetch('/p/' + encodeURIComponent(doc.paper));
+    return { status: page.status, title: (await page.text()).includes('Windows fixture') };
+  })})()`);
   assert.deepEqual(result, { status: 200, title: true });
   console.log('Installed Electron app opened a private study document and rejected a request without credentials.');
 } finally {

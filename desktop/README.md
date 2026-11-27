@@ -70,12 +70,14 @@ payload/python/bin/python3 scripts/smoke.py      # payload\python\python.exe scr
 ## Releases
 
 `.github/workflows/desktop.yml` builds the three on their own systems (macos-15, macos-15-intel, windows-latest) when a
-version is tagged, as `publish.yml` sends the package to PyPI. They go into a draft release, published once all three
-have succeeded, with the files the apps update from: `latest.yml`, and one `latest-mac.yml` for both Macs
+version is tagged. The installers go into a draft release, published once all three have succeeded. The release includes
+`latest.yml` and one `latest-mac.yml` for both Macs
 (`scripts/latest-mac.py`, since each Mac's build writes its own). The tag, `textfold/__init__.py` and this folder's
 `package.json` name the same version, or nothing is built. Run by hand (Actions › desktop › Run workflow), the files
 are the run's artifacts, and a version may be given to the app alone: two such builds, an older and a newer, try an
 update from one to the other.
+
+`publish.yml` builds a Python distribution for each tag. Its PyPI upload uses the trusted publisher on `chenxiachan/textfold`.
 
 ## Signing and notarization
 
