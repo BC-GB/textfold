@@ -6,6 +6,7 @@ fake answers in its place) and nothing is fetched.
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import json
 import re
 import os
@@ -430,7 +431,7 @@ class Server(Base):
         settings.start()
         self.addCleanup(settings.stop)
         self.jobs = FakeJobs()
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(self.jobs))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(self.jobs, KEY))
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
@@ -439,7 +440,7 @@ class Server(Base):
         req = urllib.request.Request(f"http://127.0.0.1:{self.httpd.server_port}{path}", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urlopen(req, timeout=30) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
@@ -459,15 +460,15 @@ class Server(Base):
     def test_the_text_to_edit(self):
         pid = self.post("/api/import", {"name": "diary.md", "text": TEXT})[1]["paper"]
         url = f"http://127.0.0.1:{self.httpd.server_port}/api/text/"
-        with urllib.request.urlopen(url + pid, timeout=30) as r:
+        with urlopen(url + pid, timeout=30) as r:
             self.assertEqual(json.loads(r.read()), {"text": TEXT, "original": None})
         edited = TEXT.replace("# Heat pump diary", "# Diary")
         self.post("/api/import", {"text": edited, "id": pid})
-        with urllib.request.urlopen(url + pid, timeout=30) as r:
+        with urlopen(url + pid, timeout=30) as r:
             self.assertEqual(json.loads(r.read()), {"text": edited, "original": TEXT})   # and the text before the edit
         for gone in ("md-gone-12345678", "2512.23916", "..%2Fpapers", f"{pid}/1"):
             with self.assertRaises(urllib.error.HTTPError) as e:
-                urllib.request.urlopen(url + gone, timeout=30)
+                urlopen(url + gone, timeout=30)
             self.assertEqual(e.exception.code, 404)
 
     def test_where_the_places_are(self):

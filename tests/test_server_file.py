@@ -7,6 +7,7 @@ run here listen on free ports of this computer and look for no model (TEXTFOLD_N
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import json
 import os
 import shutil
@@ -43,17 +44,19 @@ class Written(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_where_the_server_is(self):
-        f = server.announce(31917)
+        f = server.announce(31917, KEY)
         self.assertEqual(f, store.DATA / "server.json")
         got = json.loads(f.read_text(encoding="utf-8"))
         started = got.pop("started")
+        self.assertTrue(got.pop("access"))
+        self.assertTrue(got.pop("proof"))
         self.assertEqual(got, {"format": "textfold/server", "version": 1, "url": "http://127.0.0.1:31917", "port": 31917,
                                "pid": os.getpid(), "textfold": __version__})
         datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ")   # (ISO, in UTC)
         self.assertEqual([p.name for p in store.DATA.iterdir()], ["server.json"])   # the temporary file became it
 
     def test_taken_back_only_while_it_is_this_servers(self):
-        f = server.announce(31917)
+        f = server.announce(31917, KEY)
         server.withdraw(f)
         self.assertFalse(f.exists())
         server.withdraw(f)   # (gone already)
@@ -76,7 +79,7 @@ class Running(unittest.TestCase):
         self.data = self.tmp / "data"
         self.file = self.data / "server.json"
         # (the packages a user installed stay found: where they are is HOME's, unless PYTHONUSERBASE says)
-        self.env = {**os.environ, "HOME": str(self.tmp), "TEXTFOLD_DATA": str(self.data), "TEXTFOLD_NO_MODELS": "1",
+        self.env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(self.tmp), "TEXTFOLD_DATA": str(self.data), "TEXTFOLD_NO_MODELS": "1",
                     "PYTHONUSERBASE": site.getuserbase()}
 
     def start(self):
@@ -89,7 +92,7 @@ class Running(unittest.TestCase):
             try:
                 info = json.loads(self.file.read_text(encoding="utf-8"))
                 if info["pid"] == proc.pid:
-                    with urllib.request.urlopen(info["url"] + "/api/papers", timeout=5) as r:
+                    with urlopen(info["url"] + "/api/papers", timeout=5) as r:
                         if r.status == 200:
                             return proc, info
             except (OSError, ValueError):

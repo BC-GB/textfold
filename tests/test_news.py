@@ -5,6 +5,7 @@ a data folder of its own, with releases written for the test; nothing is fetched
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import json
 import re
 import sys
@@ -114,19 +115,19 @@ class Package(unittest.TestCase):
 class Server(Base):
     def test_the_page_asks_and_says_it_told(self):
         self.library(seen="0.10.42")
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(object()))
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(object(), KEY))
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         self.addCleanup(httpd.server_close)
         self.addCleanup(httpd.shutdown)
         url = f"http://127.0.0.1:{httpd.server_port}/api/whatsnew"
         with mock.patch.object(news, "__version__", "0.10.43"), mock.patch.object(news.state, "__defaults__", ("0.10.43",)):
-            with urllib.request.urlopen(url, timeout=30) as r:
+            with urlopen(url, timeout=30) as r:
                 got = json.loads(r.read())
             self.assertEqual((got["version"], got["updated"], [e["version"] for e in got["news"]]), ("0.10.43", True, ["0.10.43"]))
             req = urllib.request.Request(url, data=json.dumps({"seen": "0.10.43"}).encode(), headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urlopen(req, timeout=30) as r:
                 self.assertEqual(json.loads(r.read()), {"ok": True})
-            with urllib.request.urlopen(url, timeout=30) as r:
+            with urlopen(url, timeout=30) as r:
                 self.assertFalse(json.loads(r.read())["updated"])
 
 

@@ -32,7 +32,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from . import local, store, webpage
+from . import local, local_access, store, webpage
 
 HOST = "app.textfold.capture"
 FORMAT = "textfold/snapshot"
@@ -82,32 +82,23 @@ def write_message(stream, obj):
 # ── a snapshot, kept ─────────────────────────────────────────────────
 def _server_url():
     """The reader of the TextFold running now (server.json), if one is."""
-    try:
-        s = json.loads((store.DATA / "server.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    pid = s.get("pid") if isinstance(s, dict) else None
-    if not isinstance(pid, int) or pid <= 0 or not isinstance(s.get("url"), str):
-        return None
-    match = re.fullmatch(r"http://127\.0\.0\.1:([0-9]{1,5})", s["url"])
-    if not match or not 1 <= int(match[1]) <= 65535:
-        return None
-    from .storage_settings import _process_alive
-    if not _process_alive(pid):
-        return None   # (a server ended outright leaves its file behind)
-    return s["url"]
+    active = local_access.discover(store.DATA)
+    return active[0] if active else None
 
 
 def _generate(there, pid):
     """The paper's levels asked of the TextFold that runs, in the reader's language as its page last told it (as a
     page added on its landing is): the job's id, or None."""
     from . import langs, models
+    access = local_access.discover(store.DATA)
+    if access is None or there != access[0]:
+        return None
     lang = models.load_settings().get("lang")
     body = json.dumps({"paper": pid, "lang": lang if lang in langs.LANGS else None}).encode("utf-8")
     # Always use loopback directly. A generation job has no redirects or proxy.
     conn = http.client.HTTPConnection("127.0.0.1", urllib.parse.urlsplit(there).port, timeout=10)
     try:
-        conn.request("POST", "/api/generate", body, {"Content-Type": "application/json"})
+        conn.request("POST", "/api/generate", body, {"Content-Type": "application/json", "Authorization": "Bearer " + access[1]})
         with conn.getresponse() as response:
             if response.status != 200:
                 return None

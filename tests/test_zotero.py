@@ -6,6 +6,7 @@ fake answers on a free port of this computer, and the server run here looks for 
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import json
 import os
 import shutil
@@ -316,13 +317,13 @@ class ServerTest(Setup):
         cls.port = free_port()
         # (the packages a user installed stay found: where they are is HOME's, unless PYTHONUSERBASE says; on Windows the
         # home is USERPROFILE's, and the engine is under LOCALAPPDATA)
-        env = {**os.environ, "HOME": str(cls.home), "USERPROFILE": str(cls.home), "LOCALAPPDATA": str(cls.home / "AppData" / "Local"),
+        env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(cls.home), "USERPROFILE": str(cls.home), "LOCALAPPDATA": str(cls.home / "AppData" / "Local"),
                "TEXTFOLD_DATA": str(cls.data), "TEXTFOLD_NO_MODELS": "1", "PYTHONUSERBASE": site.getuserbase()}
         cls.proc = subprocess.Popen([sys.executable, "-m", "textfold", "serve", "--port", str(cls.port)], cwd=ROOT, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
+                urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
                 break
             except OSError:
                 time.sleep(0.1)
@@ -337,7 +338,7 @@ class ServerTest(Setup):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=None if body is None else json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json", **({"Origin": origin} if origin else {})})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urlopen(req, timeout=60) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
@@ -355,7 +356,7 @@ class ServerTest(Setup):
         pid = d["paper"]
         self.assertTrue(pid.startswith("doc-"), d)
         self.assertTrue((self.data / "papers" / pid / "source.html").exists())
-        self.assertEqual(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/p/{pid}", timeout=30).status, 200)
+        self.assertEqual(urlopen(f"http://127.0.0.1:{self.port}/p/{pid}", timeout=30).status, 200)
         self.assertEqual(json.loads((self.data / "zotero.json").read_text(encoding="utf-8"))["users/0/HTMLKEY2"]["paper"], pid)
         m = json.loads((self.data / "papers" / pid / "meta.json").read_text(encoding="utf-8"))   # Zotero's title, not the page's own
         self.assertEqual((m["title"], m["authors"], m["label"]), ("A saved page", ["Lovelace, Ada"], "Zotero · snap.html"))
@@ -377,7 +378,7 @@ class ServerTest(Setup):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/files", data=PDF + b"%dropped\n", headers={
             "Content-Type": "application/pdf", "X-Name": "dropped.pdf", "X-Lang": "en",
             "X-Refs": urllib.parse.quote(json.dumps(["2310.06825"]))})
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urlopen(req, timeout=60) as r:
             d = json.loads(r.read())
         self.assertEqual((d.get("needs"), d.get("via")), ("engine", None), d)   # (not looked for online)
         self.assertEqual(self.call("/api/settings", {"pdf_online": True})[1]["pdfOnline"], True)

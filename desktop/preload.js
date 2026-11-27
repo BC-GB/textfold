@@ -4,6 +4,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('desktop', {
+  approveAgent: (command) => ipcRenderer.invoke('agent:approve', String(command)),
   chooseLibraryFolder: () => ipcRenderer.invoke('storage:choose-folder'),
   openExternal: (url) => ipcRenderer.invoke('open-external', String(url)),
   saveFile: (name, data) => ipcRenderer.invoke('save-file', String(name),   // (a picture: its bytes, from the page's own world)

@@ -13,6 +13,7 @@ provider (settings, mode 600); it can be revoked on OpenRouter's keys page.
 """
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -157,22 +158,24 @@ def _b64(b):
 def openrouter_start(callback, back, desktop=False):
     """desktop: the consent page opens in the system browser, and the app waits for the key (openrouter_minted)."""
     verifier = _b64(secrets.token_bytes(48))
+    state = secrets.token_hex(32)
     challenge = _b64(hashlib.sha256(verifier.encode()).digest())
     with _OR_LOCK:
         _OR.clear()
-        _OR.update({"verifier": verifier, "back": back or "/", "at": time.monotonic(), "desktop": bool(desktop)})
-    q = urllib.parse.urlencode({"callback_url": callback, "code_challenge": challenge, "code_challenge_method": "S256"})
+        _OR.update({"verifier": verifier, "state": state, "back": back or "/", "at": time.monotonic(), "desktop": bool(desktop)})
+    q = urllib.parse.urlencode({"callback_url": callback + "/" + state, "code_challenge": challenge, "code_challenge_method": "S256"})
     return f"{AUTH_URL}?{q}"
 
 
-def openrouter_finish(code):
+def openrouter_finish(code, state):
     """The code OpenRouter sent back, and the verifier kept here, exchanged for a key. Returns (key, error, back)."""
     with _OR_LOCK:
         _expire_authorization()
         verifier = _OR.get("verifier")
         back = _OR.get("back", "/")
-    if not code or not verifier:
-        return None, "no authorisation was under way", back
+        if not code or not verifier or not hmac.compare_digest(state, _OR["state"]):
+            return None, "no authorisation was under way", None
+        del _OR["verifier"]
     body = json.dumps({"code": code, "code_verifier": verifier, "code_challenge_method": "S256"}).encode()
     req = urllib.request.Request(EXCHANGE_URL, data=body, headers={"Content-Type": "application/json"})
     try:
@@ -184,9 +187,8 @@ def openrouter_finish(code):
         return None, "no key in the reply", back
     with _OR_LOCK:
         _expire_authorization()
-        if _OR.get("verifier") != verifier:
+        if _OR.get("state") != state:
             return None, "authorisation has changed or expired", back
-        del _OR["verifier"]
         _OR["minted"] = key
         _OR["at"] = time.monotonic()
     return key, None, back

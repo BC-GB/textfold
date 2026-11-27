@@ -19,7 +19,7 @@ Serif text is the author's; sans text is a summary. At every level the words tha
 
 ```bash
 python3 -m pip install -r requirements.txt   # beautifulsoup4, lxml, Pillow
-python3 -m textfold serve                    # http://localhost:3017  (ThoughtDAG keeps 3001)
+python3 -m textfold serve                    # http://127.0.0.1:3017
 ```
 
 The same code is a Python package (`pyproject.toml`): `python3 -m pip wheel . --no-deps` builds it, with the reader's
@@ -27,6 +27,11 @@ pages (`textfold/web/`) inside, and `pip install textfold` gives the `textfold` 
 installs a user's packages with their commands in `~/Library/Python/3.9/bin`, which is not on the PATH, so `textfold`
 alone is not found there, and `python3 -m textfold` always is. Run from a clone, papers are
 kept in the clone; installed, in the system's folder for app data (`store.app_data()`, shared with the desktop app).
+
+The desktop opens its local reader automatically. For the standalone server, enter `textfold` as the browser username
+and obtain the current password with `python3 -m textfold local-access` in the same local profile. Local HTTP clients
+use the same password as a bearer token. A custom agent requires approval through the desktop dialog or by entering
+its exact command into `python3 -m textfold approve-local-agent` before detecting it in Settings.
 
 The landing takes a link or ID (arXiv, PubMed Central, Europe PMC, bioRxiv, medRxiv, a DOI, Wikipedia), or a Markdown
 file (the dashed box under the bar, or dropped anywhere on the page), and a language; a line under the bar names
@@ -46,7 +51,7 @@ unclear.
 Where things are kept: the code in the project (`textfold/`, with the reader's pages in `textfold/web/`); papers and exports in `papers/` and `out/` of the
 project, or wherever `TEXTFOLD_DATA` points (`PAPERFOLD_DATA`, its earlier name, is read too); settings and keys in
 `~/.textfold/`. While a server runs, `server.json` in the data folder says where it is, for the programs that
-work with it (`server.announce`: format, version, url, port, pid, TextFold's version, when it started, in UTC); it is
+work with it. Python integrations can use `local_access.discover` to get the address and the locally protected credential. It is
 removed when the server stops (^C, or SIGTERM, the app's `server.kill()`), unless a server started since has written its own.
 
 The app (`desktop/`, see its README): an Electron window around the same server, with its own CPython

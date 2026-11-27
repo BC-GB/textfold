@@ -14,7 +14,7 @@ import os
 import stat
 import warnings
 
-from . import agents, bridges, chatgpt, providers
+from . import agents, bridges, chatgpt, local_access, providers
 from ._storage_layout import DirectoryFiles
 from .store import HOME, OLD_HOMES, read_text
 
@@ -126,7 +126,8 @@ def job_context(field="model"):
 def catalog(s=None, live=None):
     s = s or load_settings()
     out, seen = [], set()
-    for m in agents.models() + agents.custom_models(s.get("custom_agents")):
+    approved = [row for row in s.get("custom_agents") or [] if local_access.approved_agent(SETTINGS.parent, row.get("command"))]
+    for m in agents.models() + agents.custom_models(approved):
         spec = _resolve(m["id"], s, [])
         out.append({"id": m["id"], "name": m["name"], "kind": "agent", "group": m["runtime"],
                     "efforts": m.get("efforts") or [], "defaultEffort": m.get("defaultEffort"), "target": _agent_target(spec)})
@@ -197,9 +198,12 @@ def _resolve(model_id, s, provs=None, kind=None):
         key, _, model = model_id[len(agents.CUSTOM):].partition("/")
         a = next((a for a in s.get("custom_agents") or [] if a.get("key") == key), None)
         if a and model and a.get("protocol") in agents.PROTOCOLS:
+            command = local_access.approved_agent(SETTINGS.parent, a.get("command"))
+            if command is None:
+                raise RuntimeError("Approve this custom agent command in Settings first.")
             # (runtime "custom", not the agent it speaks as: llm.call keys its cache by the whole id, never by
             # Claude Code's bare model name, so its replies are never taken for Claude Code's own)
-            return {"id": model_id, "kind": "agent", "runtime": "custom", "protocol": a["protocol"], "command": a["command"],
+            return {"id": model_id, "kind": "agent", "runtime": "custom", "protocol": a["protocol"], "command": command,
                     "agent": a.get("name") or key, "model": model, "effort": effort}
         raise RuntimeError(f"Model {model_id} is not available (its custom agent is gone)")
     rt = agents.runtime_of(model_id) if kind != "api" else None

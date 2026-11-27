@@ -6,6 +6,7 @@ are addressed to tells them apart, so the server answers a request addressed to 
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import AUTH, KEY, urlopen
 import http.client
 import json
 import os
@@ -79,19 +80,19 @@ class Rebinding(unittest.TestCase):
         home = Path(cls.tmp.name) / "home"
         home.mkdir()
         cls.port = free_port()
-        env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "LOCALAPPDATA": str(home / "AppData" / "Local"),
+        env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(home), "USERPROFILE": str(home), "LOCALAPPDATA": str(home / "AppData" / "Local"),
                "TEXTFOLD_DATA": str(Path(cls.tmp.name) / "data"), "TEXTFOLD_NO_MODELS": "1", "PYTHONUSERBASE": site.getuserbase()}
         cls.proc = subprocess.Popen([sys.executable, "-m", "textfold", "serve", "--port", str(cls.port)], cwd=ROOT, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
+                urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
                 break
             except OSError:
                 time.sleep(0.1)
         req = urllib.request.Request(f"http://127.0.0.1:{cls.port}/api/import", headers={"Content-Type": "application/json"},
                                      data=json.dumps({"name": "notes.md", "text": "# A private draft\n\nWhat only I should read.\n"}).encode())
-        cls.pid = json.loads(urllib.request.urlopen(req, timeout=30).read())["paper"]
+        cls.pid = json.loads(urlopen(req, timeout=30).read())["paper"]
 
     @classmethod
     def tearDownClass(cls):
@@ -102,6 +103,7 @@ class Rebinding(unittest.TestCase):
     def ask(self, method, path, host, body=None, origin=None):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         c.putrequest(method, path, skip_host=True)
+        c.putheader("Authorization", AUTH["Authorization"])
         if host is not None:
             c.putheader("Host", host)
         if origin:

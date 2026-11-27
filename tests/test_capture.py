@@ -5,6 +5,7 @@ manifest, which lets only the extensions named reach it.
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY
 import base64
 import io
 import json
@@ -17,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from textfold import capture, semantic, store, webpage
+from textfold import capture, local_access, semantic, store, webpage
 
 WORDS = ("The river office kept the gauges for a century, and its records show how the spring floods rose and fell "
          "with the snow on the hills, year after year, in the same slow rhythm the town still lives by. ")
@@ -89,7 +90,7 @@ class Receive(unittest.TestCase):
         self.assertEqual(json.loads((store.pdir(pid) / "meta.json").read_text(encoding="utf-8"))["title"], "What the tab said")
 
     def test_the_reader_opens_where_textfold_runs(self):
-        (self.data / "server.json").write_text(json.dumps({"format": "textfold/server", "url": "http://127.0.0.1:4100", "pid": os.getpid()}))
+        local_access.publish(self.data, {"url": "http://127.0.0.1:4100", "pid": os.getpid()}, KEY)
         r = capture.receive(SNAP)
         self.assertEqual(r["open"], f"http://127.0.0.1:4100/p/{r['paper']}")
         (self.data / "server.json").write_text(json.dumps({"url": "http://127.0.0.1:4100", "pid": 2 ** 22 + 12345}))   # (gone)
@@ -139,7 +140,7 @@ class ReadingView(unittest.TestCase):
     @unittest.skipUnless(os.name == 'nt', 'Windows process liveness must not send a signal')
     def test_server_liveness_never_signals_the_running_windows_process(self):
         url = 'http://127.0.0.1:12345'
-        (self.data / 'server.json').write_text(json.dumps({'url': url, 'pid': os.getpid()}), encoding='utf-8')
+        local_access.publish(self.data, {"url": url, "pid": os.getpid()}, KEY)
         with mock.patch.object(os, 'kill', side_effect=AssertionError('signal sent by a liveness probe')):
             self.assertEqual(capture._server_url(), url)
 
@@ -224,6 +225,9 @@ class ReadingView(unittest.TestCase):
 
         class Server(BaseHTTPRequestHandler):
             def do_POST(self):
+                if self.headers.get("Authorization") != "Bearer " + KEY:
+                    self.send_error(401)
+                    return
                 asked.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
                 body = b'{"id": "job1"}'
                 self.send_response(200)
@@ -236,7 +240,7 @@ class ReadingView(unittest.TestCase):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), Server)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.shutdown)
-        (self.data / "server.json").write_text(json.dumps({"url": f"http://127.0.0.1:{srv.server_address[1]}", "pid": os.getpid()}))
+        local_access.publish(self.data, {"url": f"http://127.0.0.1:{srv.server_address[1]}", "pid": os.getpid()}, KEY)
         with mock.patch("textfold.models.load_settings", lambda: {"lang": "zh"}):
             r = capture.receive(dict(SNAP, read=READ))
             self.assertEqual(r["job"], "job1")

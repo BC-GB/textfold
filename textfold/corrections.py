@@ -22,7 +22,8 @@ from . import notes, store, translate
 from .tokens import plain
 
 _LOCK = threading.Lock()   # one correction at a time: each reads the translation, changes it and writes it whole
-MARKER = re.compile(r"⟦(a\d+)[^⟧]*⟧")
+# An identifier ends before optional label text, and a new opening marker starts a new match.
+MARKER = re.compile(r"⟦(a\d+)(?:[^\d⟦⟧][^⟦⟧]*)?⟧")
 
 
 def _doc(pid, lang):
@@ -142,18 +143,20 @@ def read_back(doc, lang, text):
         if i >= len(blocks):
             raise Shape("less", blocks[-1][0] + len(blocks[-1][1]) if blocks else 1)
         n, lines = blocks[i]
-        heading = re.match(r"^(#{1,6})\s+(.*)$", lines[0])
+        line = lines[0]
+        tail = line.lstrip("#")
+        heading = tail.strip() if 1 <= len(line) - len(tail) <= 6 and tail and tail[0].isspace() else None
         if kind in ("title", "head"):
-            if not heading:
+            if heading is None:
                 raise Shape("head", n)
-            new = heading.group(2).strip()
+            new = heading
             if kind == "title" and new != _title(doc, lang):
                 got["title"] = new
             elif kind == "head" and new != _head(x, lang):
                 got["heads"][x["id"]] = new
             continue
         z = doc["units"][x]["tr"][lang]
-        if heading or len(lines) != len(z["sents"]):
+        if heading is not None or len(lines) != len(z["sents"]):
             raise Shape("lines", n, len(z["sents"]), len(lines))
         for k, (ln, (a, e)) in enumerate(zip(lines, z["sents"])):
             was = _shown(z["toks"][a:e], doc["atoms"])

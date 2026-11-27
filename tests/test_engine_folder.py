@@ -4,6 +4,7 @@ stays (its Python cannot move), when the library moves too.
 The settings, the library, the system's folder for app data and PaperFold's old place are temporary: nothing of the
 reader's is read or written, and nothing is installed (the steps of the install are stubbed).
 """
+from _local_test import KEY, urlopen
 import json
 import tempfile
 import threading
@@ -109,7 +110,7 @@ class Route(Base):
     def setUp(self):
         super().setUp()
         self.jobs = FakeJobs()
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(self.jobs))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(self.jobs, KEY))
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
@@ -118,7 +119,7 @@ class Route(Base):
         req = urllib.request.Request(f"http://127.0.0.1:{self.httpd.server_port}{path}", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urlopen(req, timeout=30) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())

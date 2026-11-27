@@ -5,6 +5,7 @@ documents deleted at once come back with the sidebar's Undo, in their folder and
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import json
 import os
 import re
@@ -35,13 +36,13 @@ class LibraryRoutes(unittest.TestCase):
         home, cls.data = Path(cls.tmp.name) / "home", Path(cls.tmp.name) / "data"
         home.mkdir()
         cls.port = free_port()
-        env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "LOCALAPPDATA": str(home / "AppData" / "Local"),
+        env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(home), "USERPROFILE": str(home), "LOCALAPPDATA": str(home / "AppData" / "Local"),
                "TEXTFOLD_DATA": str(cls.data), "TEXTFOLD_NO_MODELS": "1", "PYTHONUSERBASE": site.getuserbase()}
         cls.proc = subprocess.Popen([sys.executable, "-m", "textfold", "serve", "--port", str(cls.port)], cwd=ROOT, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
+                urlopen(f"http://127.0.0.1:{cls.port}/api/papers", timeout=1)
                 break
             except OSError:
                 time.sleep(0.1)
@@ -56,7 +57,7 @@ class LibraryRoutes(unittest.TestCase):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=None if body is None else json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urlopen(req, timeout=60) as r:
                 data = r.read()
                 return r.status, json.loads(data) if r.headers.get_content_type() == "application/json" else data.decode()
         except urllib.error.HTTPError as e:

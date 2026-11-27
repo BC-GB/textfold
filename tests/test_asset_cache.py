@@ -1,4 +1,5 @@
 """Shared assets can be reused between documents, but never under a stale content version."""
+from _local_test import AUTH, KEY
 import hashlib
 import http.client
 import json
@@ -43,7 +44,7 @@ class AssetCache(unittest.TestCase):
         server.PAGES.clear()
         self.addCleanup(server.PAGES.clear)
         self.pid = local.import_text("# Cache fixture\n\nA paragraph that needs no model.\n")
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(Jobs()))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(Jobs(), KEY))
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self.close)
@@ -55,7 +56,7 @@ class AssetCache(unittest.TestCase):
 
     def get(self, path, host="localhost"):
         c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_port, timeout=10)
-        c.request("GET", path, headers={"Host": host})
+        c.request("GET", path, headers={**AUTH, "Host": host})
         r = c.getresponse()
         out = r.status, dict(r.getheaders()), r.read()
         c.close()

@@ -6,6 +6,7 @@ with them listed. The release build (.github/workflows/desktop.yml) runs it with
 A folder of its own stands in for the home and the data folder; nothing calls a model (TEXTFOLD_NO_MODELS)."""
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -36,6 +37,7 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="textfold-smoke-"))
     env = {**os.environ, "HOME": str(tmp), "USERPROFILE": str(tmp), "TEXTFOLD_DATA": str(tmp / "data"),
            "TEXTFOLD_NO_MODELS": "1", "PYTHONNOUSERSITE": "1", "PYTHONIOENCODING": "utf-8"}
+    access = secrets.token_hex(32)
     py = [sys.executable, "-s"]
     try:
         step(f"the tests ({sys.executable})")
@@ -55,22 +57,30 @@ def main():
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-        srv = subprocess.Popen(py + ["-u", "-m", "textfold", "serve", "--port", str(port)], cwd=CODE, env=env,
+        srv = subprocess.Popen(py + ["-u", "-m", "textfold", "serve", "--port", str(port)], cwd=CODE,
+                               env={**env, "TEXTFOLD_LOCAL_ACCESS": access},
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
             base = f"http://127.0.0.1:{port}"
+
+            def get(path, timeout):
+                request = urllib.request.Request(base + path, headers={"Authorization": "Bearer " + access})
+                return urllib.request.urlopen(request, timeout=timeout)
+
             for _ in range(120):
                 try:
-                    urllib.request.urlopen(f"{base}/api/models", timeout=2)
+                    with get("/api/models", 2):
+                        pass
                     break
                 except OSError:
                     time.sleep(0.5)
             else:
                 sys.exit("the server did not answer")
-            page = urllib.request.urlopen(f"{base}/", timeout=10).read().decode()
+            page = get("/", 10).read().decode()
             assert "TextFold" in page, "the landing"
-            assert urllib.request.urlopen(f"{base}/static/reader.js", timeout=10).status == 200, "the reader's script"
-            papers = json.loads(urllib.request.urlopen(f"{base}/api/papers", timeout=10).read())
+            with get("/static/reader.js", 10) as response:
+                assert response.status == 200, "the reader's script"
+            papers = json.loads(get("/api/papers", 10).read())
             assert len(papers) == len(FILES), f"{len(papers)} documents listed, {len(FILES)} read"
             print("ok: landing, reader, the", len(papers), "documents listed")
         finally:

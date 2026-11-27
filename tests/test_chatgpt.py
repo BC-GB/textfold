@@ -1,4 +1,5 @@
 """The local OAuth and inference entry points, against a synthetic OpenAI service."""
+from _local_test import AUTH, KEY
 import base64
 import hashlib
 import http.client
@@ -50,7 +51,7 @@ class ChatGPTPlan(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         os.environ.pop("TEXTFOLD_NO_MODELS", None)
-        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(None))
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(None, KEY))
         self.port = httpd.server_address[1]
         self.origin = f"http://127.0.0.1:{self.port}"
         thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
@@ -95,7 +96,7 @@ class ChatGPTPlan(unittest.TestCase):
     def request(self, path, body=None, key=None, origin=None):
         client = http.client.HTTPConnection("127.0.0.1", self.port, timeout=2)
         try:
-            headers = {chatgpt.READER_HEADER: key} if key else {}
+            headers = {**AUTH, **({chatgpt.READER_HEADER: key} if key else {})}
             if body is not None:
                 headers.update(Origin=origin or self.origin, **{"Content-Type": "application/json"})
             client.request("GET" if body is None else "POST", path, None if body is None else json.dumps(body), headers)

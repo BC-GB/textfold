@@ -2,6 +2,7 @@
 
 HOME, data and destination are temporary. No user's settings or library is used.
 """
+from _local_test import KEY, urlopen
 import json
 import os
 import socket
@@ -26,7 +27,7 @@ class StorageRoutes(unittest.TestCase):
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
-        self.env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+        self.env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(home), "USERPROFILE": str(home),
                     "LOCALAPPDATA": str(home / "AppData" / "Local"), "TEXTFOLD_DATA": str(self.data),
                     "TEXTFOLD_NO_MODELS": "1", "PYTHONUTF8": "1"}
         self.proc = None
@@ -58,7 +59,7 @@ class StorageRoutes(unittest.TestCase):
                                          data=None if body is None else json.dumps(body).encode("utf-8"),
                                          headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with urlopen(request, timeout=20) as response:
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())

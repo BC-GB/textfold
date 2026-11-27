@@ -36,6 +36,10 @@ A copy run from the code never claims it; a link on its command line still opens
 
 ## Build
 
+The pull request's **Verify Windows installer** workflow builds Windows x64 with hash-locked Python wheels. It publishes
+a test artifact after installing and exercising the app on a Windows runner. Its provenance file records the commit,
+installer hash, and signature status.
+
 ```bash
 cd desktop
 npm install

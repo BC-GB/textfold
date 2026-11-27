@@ -46,16 +46,67 @@ def math_delimiters(text):
 
 
 def _convert(text):
-    code = []
+    # Match complete CommonMark backtick runs in one pass. Nulls are replaced by
+    # the Markdown parser too, so only generated placeholders can name a span.
+    text = text.replace("\x00", "\ufffd")
+    runs = list(re.finditer(r"`+", text))
+    following, next_width = {}, {}
+    for i in range(len(runs) - 1, -1, -1):
+        width = runs[i].end() - runs[i].start()
+        following[i] = next_width.get(width)
+        next_width[width] = i
+    parts, code, start, i = [], [], 0, 0
+    while i < len(runs):
+        end = following[i]
+        if end is None:
+            i += 1
+            continue
+        parts.append(text[start:runs[i].start()])
+        start = runs[end].end()
+        code.append(text[runs[i].start():start])
+        parts.append(f"\x00{len(code) - 1}\x00")
+        i = end + 1
+    parts.append(text[start:])
+    text = _display_math("".join(parts))
+    text = "\n".join(_inline_math(line) for line in text.split("\n"))
+    return re.sub(r"\x00([0-9]+)\x00", lambda m: code[int(m.group(1))], text)
 
-    def keep(m):
-        code.append(m.group(0))
-        return f"\x00{len(code) - 1}\x00"
 
-    text = re.sub(r"(`+)(?:.|\n)*?\1", keep, text)
-    text = re.sub(r"(?ms)^([ \t]*)\\\[(.+?)\\\][ \t]*$", lambda m: f"{m.group(1)}$$\n{m.group(2).strip()}\n{m.group(1)}$$", text)
-    text = re.sub(r"\\\((.+?)\\\)", lambda m: m.group(0) if "$" in m.group(1) else f"${m.group(1).strip()}$", text)
-    return re.sub(r"\x00(\d+)\x00", lambda m: code[int(m.group(1))], text)
+def _display_math(text):
+    out, pending = [], []
+    indent = ""
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if not pending:
+            opening = body.lstrip(" \t")
+            if not opening.startswith(r"\["):
+                out.append(line)
+                continue
+            indent = body[:len(body) - len(opening)]
+        end = body.rstrip(" \t")
+        if end.endswith(r"\]"):
+            last = end[:-2]
+            first = pending[0].lstrip(" \t")[2:] if pending else last[len(indent) + 2:]
+            interior = first + "".join(pending[1:]) + (last if pending else "")
+            if interior.strip():
+                out.extend((indent, "$$\n", interior.strip(), "\n", indent, "$$", line[len(body):]))
+                pending.clear()
+                continue
+        pending.append(line)
+    return "".join(out + pending)
+
+
+def _inline_math(line):
+    out, start = [], 0
+    while (begin := line.find(r"\(", start)) != -1:
+        end = line.find(r"\)", begin + 2)
+        if end == -1:
+            break
+        value = line[begin + 2:end]
+        out.append(line[start:begin])
+        out.append(f"${value.strip()}$" if value and "$" not in value else line[begin:end + 2])
+        start = end + 2
+    return "".join(out) + line[start:]
 
 
 def front_matter(src):

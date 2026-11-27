@@ -159,6 +159,21 @@ def main():
         a = ap.parse_args(sys.argv[2:])
         from .server import serve
         return serve(a.port)
+    if sys.argv[1:] == ["local-access"]:
+        from . import local_access, store
+        session = local_access.discover(store.DATA)
+        if not session:
+            sys.exit("Start TextFold using the same library before requesting its browser password.")
+        return print(session[1])
+    if sys.argv[1:] == ["approve-local-agent"]:
+        from . import local_access, models
+        if sys.stdin.isatty():
+            print("Enter the exact custom agent command to allow in TextFold.", flush=True)
+        try:
+            local_access.approve_agent(models.SETTINGS.parent, sys.stdin.readline(4_096).strip())
+        except (OSError, ValueError) as error:
+            sys.exit(str(error))
+        return print("Custom agent command approved.")
     if len(sys.argv) > 1 and sys.argv[1] == "get":
         from .fold import LEVELS
         ap = argparse.ArgumentParser(prog="python3 -m textfold get", description="A document at one level: the map first, then the parts that matter, deeper.")

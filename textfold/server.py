@@ -117,12 +117,14 @@ import urllib.request
 import uuid
 import webbrowser
 from html import escape
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import webpage
-from . import __version__, adapt, agents, bridges, build, chatgpt, corrections, engine, fetch, fold, ids, langs, library, llm, llm_openai, local, models, news, notes, office, pdf, pdfdoc, pdffigs, pdftext, pipeline, providers, record, store, zotero
+from ._storage_layout import DirectoryFiles
+from . import __version__, adapt, agents, bridges, build, chatgpt, corrections, engine, fetch, fold, ids, langs, library, llm, llm_openai, local, local_access, models, news, notes, office, pdf, pdfdoc, pdffigs, pdftext, pipeline, providers, record, store, zotero
 
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "reader.js": "text/javascript",
           "reader.css": "text/css", "i18n.js": "text/javascript", "tutorial.js": "text/javascript", "webmcp.js": "text/javascript",
@@ -133,19 +135,20 @@ VENDOR_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; char
                 ".txt": "text/plain; charset=utf-8", ".wasm": "application/wasm"}
 
 
+@lru_cache(maxsize=8)
+def _bundled_assets(root, extensions, recursive):
+    directory = root.resolve()
+    paths = directory.rglob("*") if recursive else directory.glob("*")
+    return {f.relative_to(directory).as_posix(): f for f in paths
+            if f.suffix in extensions and f.is_file() and f.resolve().is_relative_to(directory)}
+
+
 def vendor_file(rel):
-    """A file of web/vendor by its path under /static/vendor/, or None: nothing outside it, nothing but those kinds."""
-    root = (build.WEB / "vendor").resolve()
-    f = (root / rel).resolve()
-    return f if rel and root in f.parents and f.is_file() and f.suffix in VENDOR_TYPES else None
+    return _bundled_assets(build.WEB / "vendor", tuple(VENDOR_TYPES), True).get(rel)
 
 
 def news_file(name):
-    """A picture of What's new (whatsnew.json: an item's media) by its name under /static/news/, or None: web/news's
-    own pictures, nothing else."""
-    root = (build.WEB / "news").resolve()
-    f = (root / name).resolve()
-    return f if name and f.parent == root and f.is_file() and f.suffix in IMAGE_TYPES else None
+    return _bundled_assets(build.WEB / "news", tuple(IMAGE_TYPES), False).get(name)
 
 
 # Only an explicit refresh contacts local services. Page rendering reads the last results,
@@ -414,9 +417,7 @@ class Jobs:
         shutil.rmtree(store.pdir(job["pid"]), ignore_errors=True)   # (only its address was there)
         pid = pdfdoc.pid_of(data)
         name = Path(urllib.parse.urlparse(url).path).name or "document.pdf"
-        f = store.DATA / "uploads" / f"{pid}.pdf"
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_bytes(data)
+        f = stage_upload(data, pid, "pdf")
         job["finished"] = time.time()
         if (store.pdir(pid) / "meta.json").exists():   # read before
             f.unlink()
@@ -505,6 +506,19 @@ def _named(headers):
     return Path(unquote(headers.get("X-Name") or "document.pdf")).name[:200] or "document.pdf", lang if lang in langs.LANGS else None
 
 
+def stage_upload(data, pid, extension):
+    if not store.valid_id(pid) or (extension != "pdf" and extension not in engine.FILES):
+        raise ValueError("Invalid upload destination")
+    files = DirectoryFiles(store.DATA)
+    key = f"uploads/{pid}.{extension}"
+    path = files.path(key)
+    if path.is_symlink():
+        raise ValueError("The upload destination is a symbolic link")
+    if not path.exists():
+        files.write(key, data)
+    return path
+
+
 def take_file(jobs, data, headers):
     """A file from the landing, as (reply, status): a PDF (take_pdf), or another the engine reads (a Word, PowerPoint
     or Excel file, an e-book, a saved web page, a picture: engine.FILES). With the engine installed, it reads them all
@@ -517,12 +531,9 @@ def take_file(jobs, data, headers):
     if not ext:
         return {"error": "not-supported"}, 400
     pid = pdfdoc.pid_of(data, ext)
-    f = store.DATA / "uploads" / f"{pid}.{ext}"
-    f.parent.mkdir(parents=True, exist_ok=True)
     if (store.pdir(pid) / "meta.json").exists():   # this file, converted before
         return {"job": jobs.submit(pid, lang, False), "via": "file"}, 200
-    if not f.exists():
-        f.write_bytes(data)
+    f = stage_upload(data, pid, ext)
     if engine.where():
         return {"job": jobs.convert(pid, f, name, lang), "via": "file"}, 200
     if office.reads(ext):
@@ -553,10 +564,7 @@ def take_pdf(jobs, data, headers):
     if models.load_settings().get("pdf_online") is False:
         refs = []
     pid = pdfdoc.pid_of(data)
-    f = store.DATA / "uploads" / f"{pid}.pdf"
-    f.parent.mkdir(parents=True, exist_ok=True)
-    if not f.exists():
-        f.write_bytes(data)
+    f = stage_upload(data, pid, "pdf")
     if (store.pdir(pid) / "meta.json").exists():   # this file, converted before
         f.unlink()
         return {"job": jobs.submit(pid, lang, False), "via": "pdf"}, 200
@@ -674,15 +682,20 @@ def oauth_return_path(back):
     return back
 
 
-def make_handler(jobs):
+def make_handler(jobs, access_key):
+    if not local_access.valid(access_key):
+        raise ValueError("A local access key is required")
+
     class Handler(BaseHTTPRequestHandler):
-        def send(self, code, body, ctype="application/json; charset=utf-8", cache="no-store"):
+        def send(self, code, body, ctype="application/json; charset=utf-8", cache="no-store", challenge=False):
             data = body if isinstance(body, bytes) else body.encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", cache)
             self.send_header("X-Content-Type-Options", "nosniff")
+            if challenge:
+                self.send_header("WWW-Authenticate", 'Basic realm="TextFold for this session", charset="UTF-8"')
             if ctype.startswith("text/html"):
                 self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
                 self.send_header("Referrer-Policy", "no-referrer")
@@ -703,6 +716,7 @@ def make_handler(jobs):
             if not addressed_here(self.headers.get("Host")):   # (DNS rebinding: the module's docstring)
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
+            openrouter = re.fullmatch(r"/oauth/openrouter/([a-f0-9]{64})", u.path)
             try:
                 if u.path == chatgpt.CALLBACK:
                     return self.chatgpt_callback(u.query)
@@ -710,6 +724,8 @@ def make_handler(jobs):
                     return self.send(200, '<!doctype html><meta charset="utf-8"><title>TextFold</title>'
                                      '<main><h1>Return to TextFold</h1><p>You can close this browser tab.</p></main>',
                                      "text/html; charset=utf-8")
+                if not openrouter and not local_access.credentials(self.headers.get("Authorization"), access_key):
+                    return self.send(401, '{"error":"TextFold local access required"}', challenge=True)
                 if u.path == "/api/chatgpt/status":
                     return self.json(chatgpt.connection.status())
                 if u.path == "/":
@@ -722,10 +738,15 @@ def make_handler(jobs):
                     return self.json(bridges.bridge_status(fresh=True))
                 if u.path == "/api/openrouter/minted":   # the app, waiting while the system browser authorises
                     return self.json({"minted": bool(bridges.minted())})
-                if u.path == "/oauth/openrouter":   # OpenRouter sends the reader back here with a code
-                    code = (parse_qs(u.query).get("code") or [""])[0]
+                if openrouter:   # OpenRouter returns to the unique callback chosen by this authenticated session
+                    if self.headers["Host"].rpartition(":")[2] != str(self.server.server_address[1]):
+                        return self.json({"error": "misdirected"}, 421)
+                    codes = parse_qs(u.query, max_num_fields=12).get("code") or []
+                    code = codes[0] if len(codes) == 1 else ""
                     desktop = bridges.for_desktop()
-                    key, err, back = bridges.openrouter_finish(code)
+                    key, err, back = bridges.openrouter_finish(code, openrouter[1])
+                    if back is None:
+                        return self.json({"error": "Invalid or expired OpenRouter callback."}, 400)
                     back = oauth_return_path(back)
                     to = f"{back}#or-minted" if key else f"{back}#or-failed={quote(err or '')}"
                     if desktop:   # this tab is the system browser's: the app, waiting for the key, takes it from here
@@ -900,6 +921,11 @@ def make_handler(jobs):
                 origin and not llm_openai.same_origin(origin, "http://" + self.headers["Host"])
             ):
                 return self.json({"error": "forbidden"}, 403)  # another site may not drive this server
+            auth = local_access.credentials(self.headers.get("Authorization"), access_key)
+            if not auth:
+                return self.json({"error": "TextFold local access required"}, 401)
+            if auth == "basic" and not origin:
+                return self.json({"error": "A browser request must be made from TextFold."}, 403)
             try:
                 try:
                     size = int(self.headers.get("Content-Length") or 0)
@@ -1218,14 +1244,20 @@ def make_handler(jobs):
                         agents.STATE["scanning"] = False
                     return self.json(models_payload())
                 if u.path == "/api/agents/probe":
+                    command = self.approved_agent(body.get("command", ""))
+                    if command is None:
+                        return
                     try:
-                        return self.json(agents.probe_custom(body.get("command", ""), body.get("protocol")))
+                        return self.json(agents.probe_custom(command, body.get("protocol")))
                     except Exception as e:
                         return self.json({"error": str(e)[:600]}, 400)
                 if u.path == "/api/agents/save":
                     command, protocol = (body.get("command") or "").strip(), body.get("protocol")
                     if not command or protocol not in agents.PROTOCOLS:
                         return self.json({"error": "a custom agent needs a command and the agent it speaks as"}, 400)
+                    command = self.approved_agent(command)
+                    if command is None:
+                        return
                     name = (body.get("name") or "").strip() or command.split()[0].split("/")[-1].split("\\")[-1]
                     have = s.get("custom_agents") or []
                     key = body.get("key") if any(a.get("key") == body.get("key") for a in have) else None
@@ -1322,6 +1354,13 @@ def make_handler(jobs):
             except Exception as e:
                 self.json({"error": str(e)}, 500)
 
+        def approved_agent(self, command):
+            approved = local_access.approved_agent(models.SETTINGS.parent, command)
+            if approved is None:
+                self.json({"error": "Approve the custom agent command on this computer before using it.",
+                           "code": "agent-approval"}, 403)
+            return approved
+
         def chatgpt_action(self, path, body):
             connection = chatgpt.connection
             try:
@@ -1364,19 +1403,15 @@ def _quiet_children():
     subprocess.Popen.__init__ = quiet
 
 
-def announce(port):
+def announce(port, access_key):
     """server.json in the data folder: where this server is, for the programs that work with it (an editor's plugin, a
     script), which could not tell the desktop app's free port from a server run by hand on 3017. Replaced whole, so a
     program reading it never sees half of it. A server ended outright (on Windows, the app's server.kill(), which sends
     no signal) leaves it behind: its url then answers nothing."""
-    f = store.DATA / "server.json"
-    f.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_name(f"server.json.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps({"format": "textfold/server", "version": 1, "url": f"http://127.0.0.1:{port}", "port": port,
-                               "pid": os.getpid(), "textfold": __version__,
-                               "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2), encoding="utf-8")
-    os.replace(tmp, f)
-    return f
+    record = {"format": "textfold/server", "version": 1, "url": f"http://127.0.0.1:{port}", "port": port,
+              "pid": os.getpid(), "textfold": __version__,
+              "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    return local_access.publish(store.DATA, record, access_key)
 
 
 def withdraw(f):
@@ -1390,6 +1425,9 @@ def withdraw(f):
 
 
 def serve(port=3017, *, scan_agents=True, open_browser=False):
+    access_key = os.environ.pop("TEXTFOLD_LOCAL_ACCESS", None) or local_access.key()
+    if not local_access.valid(access_key):
+        raise ValueError("Invalid local access key")
     if os.name == "nt":
         _quiet_children()
     store.initialize_storage(log=lambda line: print(line, flush=True))   # (a library moved in Settings: copied now, once)
@@ -1398,7 +1436,7 @@ def serve(port=3017, *, scan_agents=True, open_browser=False):
     if scan_agents:
         threading.Thread(target=agents.scan, kwargs={"log": print}, daemon=True).start()
     threading.Thread(target=store.empty_trash, daemon=True).start()
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(jobs))
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(jobs, access_key))
     port = httpd.server_address[1]   # (the one given, or the free one the system chose for 0)
 
     def killed(signum, frame):
@@ -1407,11 +1445,13 @@ def serve(port=3017, *, scan_agents=True, open_browser=False):
         withdraw(f)
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
-    f = announce(port)
+    f = announce(port, access_key)
     try:
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, killed)
-        print(f"TextFold on http://localhost:{port}")
+        print(f"TextFold on http://127.0.0.1:{port}", flush=True)
+        if os.environ.get("TEXTFOLD_RUNTIME_ID") != "desktop":
+            print("Browser access: use the name 'textfold' and the password from 'textfold local-access'.", flush=True)
         if open_browser:
             import webbrowser
             threading.Thread(target=webbrowser.open, args=(f"http://127.0.0.1:{port}",), daemon=True).start()
@@ -1419,6 +1459,7 @@ def serve(port=3017, *, scan_agents=True, open_browser=False):
     except KeyboardInterrupt:
         pass
     finally:
+        httpd.server_close()
         withdraw(f)
         for stop in list(jobs.stops.values()):   # (^C: the agents' calls under way end too, and Python's exit need not wait for them)
             stop.set()

@@ -20,6 +20,7 @@ import zipfile
 from pathlib import Path
 
 from . import store
+from ._storage_layout import DirectoryFiles
 
 VERSION = "4.0.10"
 # the libraries MinerU VERSION allows to move on (docvortex<1) that have since changed what it calls: kept at a version
@@ -27,6 +28,8 @@ VERSION = "4.0.10"
 PINS = {"docvortex": "0.5.16"}
 TIERS = {"fast": "flash", "accurate": "advanced"}
 MARK = "installed.txt"   # written last: an engine folder without it is an install that did not finish
+INSTALLING = ".textfold-installing"
+_COMPONENTS = ("venv", "python", "mineru-home", "uv", ".uv-cache", MARK, INSTALLING)
 # the files it reads besides PDFs (MinerU's own list, mineru/filetypes.py), by their extension, with the name a reader
 # knows them by. A picture is read like a scanned page, in either tier; the others have one way to be read (the fast
 # tier: their text and structure are in the file, no model is needed)
@@ -77,15 +80,19 @@ def _record(folder):
 
 def choose(folder):
     """The folder the reader chose for the engine (Settings, the command line): a full path, and empty or not there yet,
-    or the one chosen before (an install that did not finish), or an engine's own (its MARK). Removing the engine removes
-    its folder, so a folder with anything else in it is refused (in the codes of the library's folder: storage_settings)."""
+    or an existing TextFold engine. Keep its files separate from unrelated contents."""
     from .storage_settings import Refused
     path = Path(str(folder or "").strip()).expanduser()
     if not path.is_absolute():
         raise Refused("path", "Enter an absolute folder path")
     path = path.resolve()
-    if path.exists() and path != target().resolve() and not (path / MARK).exists() and (not path.is_dir() or any(path.iterdir())):
-        raise Refused("not_empty", "Choose an empty folder: removing the engine removes its folder")
+    if path.exists():
+        if not path.is_dir():
+            raise Refused("not_empty", "Choose an empty folder or an existing TextFold engine")
+        if not _owned(path):
+            same = path == target().resolve()
+            if any(not same or p.name not in _COMPONENTS for p in path.iterdir()):
+                raise Refused("not_empty", "Choose an empty folder or an existing TextFold engine")
     _record(path)
     return path
 
@@ -105,6 +112,10 @@ def _bin(e, name):
 
 def _ready(e):
     return _bin(e, "mineru-kit").exists() and (e / "mineru-home" / "models").exists() and ((e / MARK).exists() or e == legacy())
+
+
+def _owned(e):
+    return any(p.is_file() and not p.is_symlink() for p in (e / MARK, e / INSTALLING)) or (e == legacy() and _ready(e))
 
 
 def where():
@@ -204,6 +215,9 @@ def install(progress=lambda *a: None, log=lambda *a: None, stop=None):
     e = target()
     _record(e)
     e.mkdir(parents=True, exist_ok=True)
+    if not _owned(e) and any(p.name not in _COMPONENTS for p in e.iterdir()):
+        raise ValueError("Choose an empty folder or an existing TextFold engine")
+    DirectoryFiles(e).write(INSTALLING, b"TextFold PDF engine\n")
     env = _env(e)
     steps = 4
     progress("engine-uv", 0, steps)
@@ -219,6 +233,7 @@ def install(progress=lambda *a: None, log=lambda *a: None, stop=None):
     shutil.rmtree(e / ".uv-cache", ignore_errors=True)
     pins = "".join(f"{k}=={v}\n" for k, v in PINS.items())
     (e / MARK).write_text(f"mineru=={VERSION}\n{pins}{time.strftime('%Y-%m-%d %H:%M:%S')}\n", encoding="utf-8")
+    (e / INSTALLING).unlink(missing_ok=True)
     progress("engine-models", steps, steps)
     return status()
 
@@ -253,9 +268,16 @@ def _repin(e, log, stop):
 
 
 def uninstall():
-    e = where() or (target() if target().exists() else None)
-    if e:
-        shutil.rmtree(e)
+    e = where() or target()
+    if _owned(e):
+        for name in _COMPONENTS:
+            item = e / name
+            if item.is_symlink() or item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+        if e.is_dir() and not any(e.iterdir()):
+            e.rmdir()
     _record(None)   # (the next one goes beside the library again, or where the reader chooses)
     _size.clear()
     return status()

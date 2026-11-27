@@ -6,6 +6,7 @@ the reader's page). In a data folder of its own; no model is called, the engine 
 Run from the repo root:
     python3 -m unittest discover tests
 """
+from _local_test import KEY, urlopen
 import json
 import re
 import sys
@@ -128,14 +129,14 @@ class Lookup(Pdf):
         settings = mock.patch.object(server.models, "load_settings", return_value={})   # (not the reader's own)
         settings.start()
         self.addCleanup(settings.stop)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(FakeJobs()))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(FakeJobs(), KEY))
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
 
     def get(self, path):
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{self.httpd.server_port}{path}", timeout=30) as r:
+            with urlopen(f"http://127.0.0.1:{self.httpd.server_port}{path}", timeout=30) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())

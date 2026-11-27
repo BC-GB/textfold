@@ -2099,12 +2099,25 @@
         <label>${esc(t.ca_manual)}<input class="ca-manual" value="${esc(f.manual || '')}" placeholder="kimi-k2, glm-4.6" spellcheck="false" autocomplete="off"></label>
         <div class="st-row end"><button type="button" class="st-btn ca-cancel">${esc(t.cancel)}</button><button type="button" class="primary ca-save"${caReady(f) ? '' : ' disabled'}>${esc(t.ca_save)}</button></div></div>`;
     }
+    async function agentRequest(path, payload) {
+      try {
+        return await api(path, payload);
+      } catch (error) {
+        if (error.code !== 'agent-approval') throw error;
+        if (!window.desktop?.approveAgent) {
+          throw new Error("In a local terminal, run 'textfold approve-local-agent' and enter the exact command. Then try again.");
+        }
+        if (!await window.desktop.approveAgent(payload.command)) throw error;
+        return api(path, payload);
+      }
+    }
+
     async function detectAgent(saved) {   // (saved: the models an edited agent was saved with, ticked again where listed)
       const f = agentForm;
       if (!f || !f.command.trim()) return;
       f.busy = true; f.err = ''; f.version = ''; render();
       try {
-        const r = await api('/api/agents/probe', { command: f.command, protocol: f.protocol || null });
+        const r = await agentRequest('/api/agents/probe', { command: f.command.trim(), protocol: f.protocol || null });
         if (agentForm !== f) return;
         f.version = r.version || ''; f.protocol = r.protocol || f.protocol; f.found = r.models || []; f.err = r.error || (r.protocol ? '' : T().ca_need_proto);
         const keep = saved || f.picked;
@@ -2376,7 +2389,7 @@
         saveBtn.onclick = async () => {
           if (!caReady(f)) return;
           try {
-            const d = await api('/api/agents/save', { key: f.key, name: f.name.trim() || caName(f.command), command: f.command.trim(), protocol: f.protocol, models: caModels(f) });
+            const d = await agentRequest('/api/agents/save', { key: f.key, name: f.name.trim() || caName(f.command), command: f.command.trim(), protocol: f.protocol, models: caModels(f) });
             agentForm = null; update(d);
           } catch (x) { f.err = x.message; render(); }
         };
