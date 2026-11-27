@@ -613,6 +613,7 @@ CODEX_DOCUMENT_CONFIG = [
     'approval_policy="never"',
     'features.shell_tool=false',
     'features.shell_snapshot=false',
+    'features.goals=false',
     'mcp_servers={}',
     'project_doc_max_bytes=0',
 ]

@@ -67,6 +67,7 @@ class Commands(unittest.TestCase):
             self.assertIn("--strict-config", cmd)
             self.assertIn("--ignore-user-config", cmd)
             self.assertIn("features.shell_tool=false", cmd)
+            self.assertIn("features.goals=false", cmd)
             self.assertIn('default_permissions="textfold-document"', cmd)
             self.assertIn('permissions.textfold-document.filesystem={":workspace_roots"="read"}', cmd)
             self.assertIn('permissions.textfold-document.network.enabled=false', cmd)

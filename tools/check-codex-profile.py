@@ -79,7 +79,7 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as server:
 
             assert run.returncode == 0 and seen
             tools = {tool for request in seen for tool in request}
-            assert not tools.intersection({"shell", "shell_command", "exec_command", "write_stdin", "apply_patch"})
+            assert not tools.intersection({"shell", "shell_command", "exec_command", "write_stdin", "create_goal", "update_goal"})
             assert any(tool.startswith("web_search") for tool in tools) == use_web
 
     server.shutdown()
@@ -98,6 +98,12 @@ with tempfile.TemporaryDirectory() as directory:
 import sys
 assert Path('allowed.txt').read_text() == 'scratch fixture'
 try:
+    Path('allowed.txt').write_text('must stay read-only')
+except OSError:
+    pass
+else:
+    raise SystemExit('The profile allowed a write in the scratch directory')
+try:
     Path(sys.argv[1]).read_text()
 except OSError:
     pass
@@ -108,4 +114,4 @@ else:
                     "-c", profile, "-c", "permissions.textfold-document.network.enabled=false",
                     "--", sys.executable, "-I", "-S", "-c", check, str(outside)],
                    timeout=60, check=True)
-print("The scratch fixture was readable and the separate fixture was denied.")
+print("The scratch fixture was read-only and the separate fixture was denied.")
