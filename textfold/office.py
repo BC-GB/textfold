@@ -41,6 +41,14 @@ OPF = "{http://www.idpf.org/2007/opf}"
 IN, OUT, DIN, DOUT = chr(0xE000), chr(0xE001), chr(0xE002), chr(0xE003)
 TEXTUTIL = {"doc", "rtf", "odt"}   # read through macOS's textutil, which writes them as .docx
 MAX_ROWS, MAX_COLS = 1000, 50      # of a sheet: a table longer than this is not read as a text
+DOCX_MAX_MEMBERS = 10_000
+DOCX_MAX_MEMBER_BYTES = 128 * 1024 * 1024
+DOCX_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+DOCX_MAX_COMPRESSION_RATIO = 100
+DOCX_RATIO_MIN_BYTES = 1024 * 1024   # small XML parts may compress unusually well without consuming much
+DOCX_MAX_MATH_BYTES = 16 * 1024 * 1024
+DOCX_COPY_BYTES = 1024 * 1024
+DOCX_SPOOL_BYTES = 8 * 1024 * 1024
 PICTURES = {"png": "png", "jpeg": "jpg", "jpg": "jpg", "gif": "gif", "webp": "webp", "svg+xml": "svg", "svg": "svg"}
 # names an Office file gives as its author that are no one's: the account, the program that wrote it
 NOBODY = re.compile(r"^(?:microsoft office user|microsoft account|administrator|admin|user|owner|unknown|author|"
@@ -439,24 +447,77 @@ def _core(z):
 
 # ── Word ──
 
-def _with_math(data):
+def _docx_members(z):
+    """A DOCX's members after its declared expansion has passed the document budget."""
+    members = z.infolist()
+    if len(members) > DOCX_MAX_MEMBERS:
+        raise ValueError("bad-file")
+    total = 0
+    for info in members:
+        if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            raise ValueError("bad-file")
+        total += info.file_size
+        ratio_bytes = max(DOCX_RATIO_MIN_BYTES, info.compress_size * DOCX_MAX_COMPRESSION_RATIO)
+        if info.file_size > DOCX_MAX_MEMBER_BYTES or total > DOCX_MAX_TOTAL_BYTES or info.file_size > ratio_bytes:
+            raise ValueError("bad-file")
+    return members
+
+
+def _copy_docx_member(z, info, target, total):
+    """Stream one member, enforcing the same budgets against bytes actually produced by the decompressor."""
+    size = 0
+    ratio_bytes = max(DOCX_RATIO_MIN_BYTES, info.compress_size * DOCX_MAX_COMPRESSION_RATIO)
+    with z.open(info) as source:
+        while chunk := source.read(DOCX_COPY_BYTES):
+            size += len(chunk)
+            total += len(chunk)
+            if size > DOCX_MAX_MEMBER_BYTES or total > DOCX_MAX_TOTAL_BYTES or size > ratio_bytes:
+                raise ValueError("bad-file")
+            target.write(chunk)
+    if size != info.file_size:
+        raise ValueError("bad-file")
+    return total, size
+
+
+def _with_math(path):
     """A .docx with its formulas (OMML) as LaTeX in runs of text, which mammoth keeps (it drops OMML)."""
-    zin, buf = zipfile.ZipFile(io.BytesIO(data)), io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
-        for info in zin.infolist():
-            raw = zin.read(info.filename)
-            if info.filename in ("word/document.xml", "word/footnotes.xml", "word/endnotes.xml") and b"oMath" in raw:
-                try:
-                    root = _xml(raw)
-                    for para in list(root.iter(omml.M + "oMathPara")):
-                        tex = "".join(f"{DIN}{omml.latex(m)}{DOUT}" for m in para.findall(omml.M + "oMath"))
-                        _replace(para, tex)
-                    for m in list(root.iter(omml.M + "oMath")):
-                        _replace(m, f"{IN}{omml.latex(m)}{OUT}")
-                    raw = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
-                except Exception:
-                    pass   # its formulas are left out, as mammoth leaves them
-            zout.writestr(info, raw)
+    maths = {"word/document.xml", "word/footnotes.xml", "word/endnotes.xml"}
+    buf = tempfile.SpooledTemporaryFile(max_size=DOCX_SPOOL_BYTES)
+    try:
+        with zipfile.ZipFile(path) as zin, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+            total = written = 0
+            for info in _docx_members(zin):
+                target_info = copy.copy(info)
+                with zout.open(target_info, "w") as target:
+                    if info.filename not in maths:
+                        if written + info.file_size > DOCX_MAX_TOTAL_BYTES:
+                            raise ValueError("bad-file")
+                        total, size = _copy_docx_member(zin, info, target, total)
+                        written += size
+                        continue
+                    if info.file_size > DOCX_MAX_MATH_BYTES:
+                        raise ValueError("bad-file")
+                    part = io.BytesIO()
+                    total, _ = _copy_docx_member(zin, info, part, total)
+                    raw = part.getvalue()
+                    if b"oMath" in raw:
+                        try:
+                            root = _xml(raw)
+                            for para in list(root.iter(omml.M + "oMathPara")):
+                                tex = "".join(f"{DIN}{omml.latex(m)}{DOUT}" for m in para.findall(omml.M + "oMath"))
+                                _replace(para, tex)
+                            for m in list(root.iter(omml.M + "oMath")):
+                                _replace(m, f"{IN}{omml.latex(m)}{OUT}")
+                            raw = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+                        except Exception:
+                            pass   # its formulas are left out, as mammoth leaves them
+                    written += len(raw)
+                    if len(raw) > DOCX_MAX_MATH_BYTES or written > DOCX_MAX_TOTAL_BYTES:
+                        raise ValueError("bad-file")
+                    target.write(raw)
+    except Exception:
+        buf.close()
+        raise
     buf.seek(0)
     return buf
 
@@ -472,14 +533,16 @@ def _replace(el, text):
 
 def _docx(path, doc):
     import mammoth
-    data = Path(path).read_bytes()
-    doc.meta.update(_core(zipfile.ZipFile(io.BytesIO(data))))
 
     def picture(image):
         with image.open() as f:
             return {"src": doc.picture(f.read(), image.content_type) or "", "alt": image.alt_text or ""}
 
-    result = mammoth.convert_to_html(_with_math(data), style_map=STYLE_MAP, convert_image=mammoth.images.img_element(picture))
+    with _with_math(path) as data:
+        with zipfile.ZipFile(data) as z:
+            doc.meta.update(_core(z))
+        data.seek(0)
+        result = mammoth.convert_to_html(data, style_map=STYLE_MAP, convert_image=mammoth.images.img_element(picture))
     Flow(doc, lambda src: src if src.startswith("images/") else None).walk(_fragment(result.value))
 
 
