@@ -100,7 +100,7 @@ class Rebinding(unittest.TestCase):
         cls.proc.wait(timeout=10)
         cls.tmp.cleanup()
 
-    def ask(self, method, path, host, body=None, origin=None):
+    def ask(self, method, path, host, body=None, origin=None, *, headers=None):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         c.putrequest(method, path, skip_host=True)
         c.putheader("Authorization", AUTH["Authorization"])
@@ -108,6 +108,8 @@ class Rebinding(unittest.TestCase):
             c.putheader("Host", host)
         if origin:
             c.putheader("Origin", origin)
+        for name, value in (headers or {}).items():
+            c.putheader(name, value)
         data = json.dumps(body).encode() if body is not None else None
         if data is not None:
             c.putheader("Content-Type", "application/json")
@@ -142,6 +144,15 @@ class Rebinding(unittest.TestCase):
         self.assertEqual(self.ask("POST", path, host, {}, f"https://{host}")[0], 403)
         for trusted in (None, f"http://{host}"):
             self.assertEqual(self.ask("POST", path, host, {}, trusted)[0], 404)
+
+    def test_get_rejects_browser_requests_from_another_origin(self):
+        host = f"localhost:{self.port}"
+        url = "/api/papers"
+        for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
+                        {"Referer": "https://external.example/"}, {"Origin": "null"}):
+            self.assertEqual(self.ask("GET", url, host, headers=headers)[0], 403)
+        for headers in ({"Sec-Fetch-Site": "none"}, {"Sec-Fetch-Site": "same-origin", "Referer": f"http://{host}/"}):
+            self.assertEqual(self.ask("GET", url, host, headers=headers)[0], 200)
 
     def test_this_computer_reads_as_before(self):
         for host in (f"127.0.0.1:{self.port}", f"localhost:{self.port}", f"[::1]:{self.port}"):

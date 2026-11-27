@@ -92,6 +92,8 @@ class AssetCache(unittest.TestCase):
                 status, headers, body = self.get(path)
                 self.assertEqual(status, 200)
                 self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(headers["Content-Security-Policy"], "frame-ancestors 'none'")
+                self.assertEqual(headers["X-Frame-Options"], "DENY")
                 urls = re.findall(r'(?:src|href)="(/static/(?!vendor/)[^"]+)"', body.decode())
                 self.assertEqual(set(urls), {self.url(name) for name in expected})
                 self.assertIn(b'/static/vendor/fonts/fonts.css"', body)

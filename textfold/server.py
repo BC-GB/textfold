@@ -659,6 +659,15 @@ def addressed_here(host):
     return bool(m) and m.group(1) in LOCAL_NAMES
 
 
+def from_other_site(headers):
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if site and site not in ("same-origin", "none"):
+        return True
+    here = "http://" + headers["Host"]
+    return any(value and not llm_openai.same_origin(value, here)
+               for name in ("Origin", "Referer") if (value := headers.get(name)))
+
+
 def provider_secret(body, base, previous):
     """A saved credential belongs to the origin where the user entered it."""
     if body.get("minted"):
@@ -696,8 +705,9 @@ def make_handler(jobs, access_key):
             self.send_header("X-Content-Type-Options", "nosniff")
             if challenge:
                 self.send_header("WWW-Authenticate", 'Basic realm="TextFold for this session", charset="UTF-8"')
-            if ctype.startswith("text/html"):
+            if ctype.partition(";")[0].strip().lower() == "text/html":
                 self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+                self.send_header("X-Frame-Options", "DENY")
                 self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             try:
@@ -717,6 +727,8 @@ def make_handler(jobs, access_key):
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
             openrouter = re.fullmatch(r"/oauth/openrouter/([a-f0-9]{64})", u.path)
+            if not openrouter and u.path not in (chatgpt.CALLBACK, chatgpt.CALLBACK + "/done") and from_other_site(self.headers):
+                return self.json({"error": "forbidden"}, 403)
             try:
                 if u.path == chatgpt.CALLBACK:
                     return self.chatgpt_callback(u.query)
@@ -755,13 +767,11 @@ def make_handler(jobs, access_key):
                                 f'<div style="text-align:center;line-height:1.7"><h2>{"✓" if key else "✕"} OpenRouter</h2>'
                                 f'<p style="color:#6b6558">{"回到 TextFold 即可，本页可以关闭。<br>Return to TextFold; this tab can be closed." if key else escape(err or "")}</p></div>')
                         return self.send(200, page, "text/html; charset=utf-8")
-                    self.send_response(303)
-                    self.send_header("Location", quote(to, safe="/?#%&=+:;,@!$'()*~-._"))
-                    self.send_header("Referrer-Policy", "no-referrer")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
+                    # Start a same-origin navigation from this page after the external OAuth callback.
+                    target = escape(quote(to, safe="/?#%&=+:;,@!$'()*~-._"))
+                    page = (f'<!doctype html><meta charset="utf-8"><title>TextFold</title>'
+                            f'<meta http-equiv="refresh" content="0; url={target}"><a href="{target}">Return to TextFold</a>')
+                    return self.send(200, page, "text/html; charset=utf-8")
                 m = re.fullmatch(r"/p/([\w.-]+)/img/([\w.-]+)", u.path)   # a paper's picture (a drawing stays inside its page)
                 if m and store.valid_id(m.group(1)):
                     f = store.pdir(m.group(1)) / "img" / m.group(2)
