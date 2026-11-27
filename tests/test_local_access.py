@@ -80,7 +80,8 @@ class LocalReader(unittest.TestCase):
             probe.assert_called_once_with("fixture", None)
 
     def test_basic_auth_is_supported_and_browser_writes_need_matching_origin(self):
-        basic = "Basic " + base64.b64encode(f"textfold:{self.key}".encode()).decode()
+        password = local_access.browser_password(self.key)
+        basic = "Basic " + base64.b64encode(f"textfold:{password}".encode()).decode()
         self.assertEqual(self.request("/api/langs", token=basic)[0], 200)
         path = "/api/agents/probe"
         local_access.approve_agent(self.settings, "fixture")
@@ -90,6 +91,12 @@ class LocalReader(unittest.TestCase):
             probe.assert_not_called()
             origin = f"http://127.0.0.1:{self.port}"
             self.assertEqual(self.request(path, method="POST", token=basic, origin=origin)[0], 200)
+
+    def test_browser_and_automation_credentials_are_distinct(self):
+        password = local_access.browser_password(self.key)
+        self.assertIsNone(local_access.credentials("Bearer " + password, self.key))
+        raw_as_basic = base64.b64encode(f"textfold:{self.key}".encode()).decode()
+        self.assertIsNone(local_access.credentials("Basic " + raw_as_basic, self.key))
 
     def test_only_the_oauth_return_pages_allow_an_external_browser(self):
         self.assertEqual(self.request("/oauth/chatgpt/done")[0], 200)

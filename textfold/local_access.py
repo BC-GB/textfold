@@ -35,8 +35,13 @@ def proof(secret, url, pid):
     return hmac.new(secret.encode("ascii"), f"{pid}:{url}".encode("ascii"), hashlib.sha256).hexdigest()
 
 
+def browser_password(secret):
+    """Derive a browser-only credential from this launch's automation key."""
+    return hmac.new(secret.encode("ascii"), b"TextFold browser password", hashlib.sha256).hexdigest()
+
+
 def credentials(header, secret):
-    """Basic auth is scoped to this browser origin. Native clients send a bearer token."""
+    """Check each client against its own credential."""
     scheme, _, value = (header or "").partition(" ")
     scheme = scheme.lower()
     if scheme == "basic":
@@ -48,7 +53,10 @@ def credentials(header, secret):
             return None
     elif scheme != "bearer":
         return None
-    return scheme if valid(value) and hmac.compare_digest(value, secret) else None
+    if not valid(value):
+        return None
+    expected = browser_password(secret) if scheme == "basic" else secret
+    return scheme if hmac.compare_digest(value, expected) else None
 
 
 def _dpapi(data, decrypt=False):

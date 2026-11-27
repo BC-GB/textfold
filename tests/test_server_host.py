@@ -22,7 +22,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
-from textfold import bridges, server
+from textfold import bridges, local_access, server
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -170,7 +170,8 @@ class Rebinding(unittest.TestCase):
         self.assertEqual(self.ask("GET", "/api/papers", host, headers=headers)[0], 403)
         frame = {**headers, "Sec-Fetch-Dest": "iframe"}
         self.assertEqual(self.ask("GET", "/", host, headers=frame)[0], 403)
-        basic = "Basic " + base64.b64encode(f"textfold:{KEY}".encode()).decode()
+        password = local_access.browser_password(KEY)
+        basic = "Basic " + base64.b64encode(f"textfold:{password}".encode()).decode()
         self.assertEqual(self.ask("GET", "/", host, headers=headers, authorization=basic)[0], 403)
 
 
