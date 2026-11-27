@@ -161,6 +161,8 @@ def main():
         return serve(a.port)
     if sys.argv[1:] == ["local-access"]:
         from . import local_access, store
+        if not sys.stdout.isatty():
+            sys.exit("Open a local interactive terminal to view the TextFold browser password.")
         session = local_access.discover(store.DATA)
         if not session:
             sys.exit("Start TextFold using the same library before requesting its browser password.")

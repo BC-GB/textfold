@@ -778,11 +778,12 @@ def make_handler(jobs, access_key):
                         return
                     library.opened(m.group(1))
                     return self.send(200, reader_page(m.group(1)), "text/html; charset=utf-8")
-                if u.path.startswith("/static/") and u.path[8:] in STATIC:
-                    data = (build.WEB / u.path[8:]).read_bytes()
+                static = next((name for name in STATIC if u.path == "/static/" + name), None) if u.path.startswith("/static/") else None
+                if static:
+                    data = (build.WEB / static).read_bytes()
                     version = hashlib.sha256(data).hexdigest()
                     cache = "private, max-age=31536000, immutable" if parse_qs(u.query).get("v") == [version] else "no-store"
-                    return self.send(200, data, STATIC[u.path[8:]] + "; charset=utf-8", cache=cache)
+                    return self.send(200, data, STATIC[static] + "; charset=utf-8", cache=cache)
                 if u.path.startswith("/static/vendor/"):
                     f = vendor_file(unquote(u.path[len("/static/vendor/"):]))
                     if f:
@@ -1343,7 +1344,16 @@ def make_handler(jobs, access_key):
                 if u.path == "/api/settings/test":
                     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
                     try:
-                        spec = models.ask_spec() if body.get("task") == "ask" else models.resolve(body.get("model"))   # (questions: their model, reasoning as set)
+                        if body.get("task") == "ask":
+                            spec = models.ask_spec(s)
+                        elif body.get("model"):
+                            catalog, provs = models.catalog(s)
+                            row = next((m for m in catalog if m["id"] == body["model"]), None)
+                            if not row:
+                                raise RuntimeError(models.NO_MODEL)
+                            spec = models._resolve(row["id"], s, provs, kind=row["kind"])
+                        else:
+                            spec = models.resolve(s=s)
                         t0 = time.time()
                         with tempfile.TemporaryDirectory() as tmp:
                             rec, _ = llm.call('Return JSON {"ok": true}.', schema, spec, Path(tmp), force=True, timeout=180)

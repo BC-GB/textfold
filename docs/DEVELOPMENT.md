@@ -30,8 +30,9 @@ kept in the clone; installed, in the system's folder for app data (`store.app_da
 
 The desktop opens its local reader automatically. For the standalone server, enter `textfold` as the browser username
 and obtain the current password with `python3 -m textfold local-access` in the same local profile. Local HTTP clients
-use the same password as a bearer token. A custom agent requires approval through the desktop dialog or by entering
+can use `local_access.discover` and send the returned key as a bearer token. A custom agent requires approval through the desktop dialog or by entering
 its exact command into `python3 -m textfold approve-local-agent` before detecting it in Settings.
+On Windows, launch agents with a native executable or a supported npm shim so arguments are passed directly.
 
 The landing takes a link or ID (arXiv, PubMed Central, Europe PMC, bioRxiv, medRxiv, a DOI, Wikipedia), or a Markdown
 file (the dashed box under the bar, or dropped anywhere on the page), and a language; a line under the bar names

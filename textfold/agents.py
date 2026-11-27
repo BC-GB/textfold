@@ -28,6 +28,7 @@ sandbox). Still no session, and the scratch directory to start in.
 import contextlib
 import glob
 import json
+import ntpath
 import os
 import queue
 import re
@@ -270,6 +271,16 @@ def child_env():
     return env
 
 
+def _direct_arguments(args):
+    if not isinstance(args, (list, tuple)) or not args:
+        raise ValueError("An agent must start with a program and a list of arguments")
+    if WIN:
+        name = ntpath.basename(os.fspath(args[0])).lower()
+        if name.endswith((".bat", ".cmd")) or name in {"cmd", "cmd.exe", "command.com"}:
+            raise RuntimeError("Use a native executable or a supported npm shim for this agent")
+    return args
+
+
 def run(args, *, stop=None, timeout=None, input=None, done=None, **kw):
     """subprocess.run for an agent's call, which the reader's Stop ends at once: stop (a threading.Event; else the one
     this thread's calls are made under, llm.stoppable) set while it runs ends the call's whole process tree (an agent
@@ -280,9 +291,12 @@ def run(args, *, stop=None, timeout=None, input=None, done=None, **kw):
     there, its tree with it, and returns as if it had ended: an agent that goes on with work of its own once it has
     answered (Antigravity names the conversation)."""
     from .llm import Stopped, stop_now
+    args = _direct_arguments(args)
+    if kw.pop("shell", False):
+        raise ValueError("Agents cannot be started through a shell")
     stop = stop or stop_now()
     if stop is None and done is None:
-        return subprocess.run(args, input=input, timeout=timeout, **kw)
+        return subprocess.run(args, input=input, timeout=timeout, shell=False, **kw)
     stop = stop or threading.Event()
     if stop.is_set():
         raise Stopped()
@@ -292,7 +306,8 @@ def run(args, *, stop=None, timeout=None, input=None, done=None, **kw):
         if input is not None:
             source.write(input.encode(kw.get("encoding") or "utf-8", kw.get("errors") or "strict") if isinstance(input, str) else input)
             source.seek(0)
-        p = subprocess.Popen(args, stdin=source if input is not None else None, **({} if WIN else {"start_new_session": True}), **kw)
+        p = subprocess.Popen(args, stdin=source if input is not None else None, shell=False,
+                             **({} if WIN else {"start_new_session": True}), **kw)
         deadline = None if timeout is None else time.monotonic() + timeout
         try:
             while True:
@@ -489,7 +504,7 @@ def argv(path):
 
 
 def _run(args, timeout, env=None, **kw):
-    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    return subprocess.run(_direct_arguments(args), capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False,
                           timeout=timeout, env=env or child_env(), stdin=subprocess.DEVNULL, **kw)
 
 
@@ -549,8 +564,9 @@ def _rpc(args, requests, timeout=30, cwd=None):
     """Write JSON lines, collect the replies whose id we asked for. When none comes back, an error that says why, in the
     program's own words (what it wrote to stderr) when it stopped: a scan then shows it, not "0 models" (#12). The pipes
     are UTF-8 whatever the system's codepage (a Chinese Windows would read them as cp936)."""
+    args = _direct_arguments(args)
     err = tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace")
-    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8",
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8", shell=False,
                          errors="replace", env=child_env(), cwd=cwd or str(HOME))
     lines = queue.Queue()   # read by a thread: select() cannot wait on a pipe on Windows
     threading.Thread(target=lambda: [*map(lines.put, p.stdout), lines.put(None)], daemon=True).start()

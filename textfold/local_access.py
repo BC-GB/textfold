@@ -86,7 +86,7 @@ def publish(data, record, secret):
              "proof": proof(secret, record["url"], record["pid"])}
     files = DirectoryFiles(data)
     files.write(ANNOUNCEMENT, json.dumps(value, indent=2).encode("utf-8"))
-    return files.path(ANNOUNCEMENT)
+    return Path(data) / ANNOUNCEMENT
 
 
 def _read_private(path):
