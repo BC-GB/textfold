@@ -411,7 +411,7 @@ class Jobs:
         PAGES.pop(job["pid"], None)
 
     def _pdf_link(self, job, url, requests=fetch.PUBLIC):
-        data = fetch.urlread(urllib.request.Request(url, headers=fetch.UA), 90, pdf.LIMIT + 1, open_url=requests.open)[0]
+        data = fetch.urlread(urllib.request.Request(url, headers=fetch.UA), 90, pdf.LIMIT + 1, open_url=requests.open, truncate=True)[0]
         if data[:5] != b"%PDF-" or len(data) > pdf.LIMIT:
             raise ValueError("not-pdf")
         shutil.rmtree(store.pdir(job["pid"]), ignore_errors=True)   # (only its address was there)

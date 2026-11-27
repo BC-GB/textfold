@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 
 from . import local, markdown, store
-from .fetch import UA, urlread
+from .fetch import DownloadBudget, UA, urlread
 from .web_requests import PageRequests
 
 LIMIT = 8 * 2**20   # no article's page is larger
@@ -64,7 +64,8 @@ def _get(url, requests=None):
         if ctype and "html" not in ctype and "xml" not in ctype:
             raise ValueError("web-notext")
     try:
-        data, final, headers = urlread(req, 30, LIMIT + 1, check, busy={500, 502, 504}, open_url=requests.open)   # (429 and 503: a wall)
+        data, final, headers = urlread(req, 30, LIMIT + 1, check, busy={500, 502, 504},
+                                      open_url=requests.open, truncate=True)   # (429 and 503: a wall)
         return data[:LIMIT], final, headers.get_content_charset()
     except urllib.error.HTTPError as e:
         if e.code in (401, 402, 403, 407, 429, 451, 503):   # a sign-in, a paywall, a wall against programs
@@ -742,8 +743,9 @@ def meta_of(pid, final, info):
 
 def image_resolver(html, requests):
     """Use the same destination policy for parallel downloads and any uncached image."""
-    pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html), open_url=requests.open)
-    return lambda folder: local.Images(folder, None, pre=pre, open_url=requests.open).resolve
+    budget = DownloadBudget()
+    pre = local.prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html), open_url=requests.open, budget=budget)
+    return lambda folder: local.Images(folder, None, pre=pre, open_url=requests.open, budget=budget).resolve
 
 
 def fetch(pid, progress=None):

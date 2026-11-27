@@ -24,12 +24,11 @@ import urllib.request
 from pathlib import Path, PureWindowsPath
 
 from . import editable, ids, markdown, notes, picture, semantic, store
-from .fetch import UA, urlread
+from .fetch import DownloadBudget, MAX_IMAGE as MAX_IMG, UA, urlread
 from .parse import parse
 from .web_requests import PUBLIC, PageRequests
 
 IMG_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
-MAX_IMG = 15_000_000
 KINDS = {".md": "markdown", ".markdown": "markdown", ".mdown": "markdown", ".txt": "markdown"}
 
 
@@ -52,9 +51,10 @@ class Images:
     the later first): then it is the picture kept under its name (a converted PDF's pictures were read from the
     engine's folder, which is gone)."""
 
-    def __init__(self, folder, base, get=None, pre=None, kept=(), open_url=None):
+    def __init__(self, folder, base, get=None, pre=None, kept=(), open_url=None, budget=None):
         self.folder, self.base, self.seen, self.get = folder, base, {}, get   # get(url) -> (bytes, url): a source's own
         self.open_url = open_url
+        self.budget = budget if budget is not None else DownloadBudget()
         self.pre = pre or {}   # src -> (bytes, name), read beforehand (prefetch)
         self.kept = {n: f for k in kept if Path(k).is_dir() for f in sorted(Path(k).iterdir()) for n in (f.name.split("-", 1)[-1], f.name)}
 
@@ -98,8 +98,10 @@ class Images:
             path = urllib.parse.urlparse(src).path
             if self.get:
                 data, _ = self.get(src)
+                self.budget.take(len(data))
                 return (data if data[:4] != b"<!DO" and data[:5] != b"<html" else None), path.rsplit("/", 1)[-1] or "image"
-            data, _, headers = urlread(urllib.request.Request(src, headers=UA), 20, MAX_IMG + 1, again=(1,), open_url=self.open_url)   # (a page
+            data, _, headers = urlread(urllib.request.Request(src, headers=UA), 20, MAX_IMG, again=(1,),
+                                       open_url=self.open_url or PUBLIC.open, budget=self.budget)   # (a page
             # has many pictures, and one missed is tried again: one try more each)
             ctype = (headers.get("Content-Type") or "").split(";")[0].strip()
             if not ctype.startswith("image/"):
@@ -121,13 +123,13 @@ class Images:
             return stream.read(MAX_IMG + 1), f.name
 
 
-def prefetch(srcs, workers=6, open_url=None):
+def prefetch(srcs, workers=6, open_url=None, budget=None):
     """Pictures on the web, read at the same time rather than one after the other (a README's GIFs take seconds
     each): src -> (bytes, name), for Images(pre=...). One that cannot be read is left to Images to try again."""
     from concurrent.futures import ThreadPoolExecutor
 
     web = sorted({s for s in srcs if re.match(r"https?://", s or "", re.I)})
-    reader = Images(None, None, open_url=open_url)
+    reader = Images(None, None, open_url=open_url, budget=budget)
 
     def one(src):
         try:
@@ -268,8 +270,9 @@ def _replace(pid, text, name, base):
             open_url = PageRequests(original_url).open
         elif re.match(r"^(?:gh-|wiki-|pmc|ppr|biorxiv-|medrxiv-|\d{4}\.)", pid):
             open_url = PUBLIC.open
-        pre = prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html), open_url=open_url)
-        images = Images(tmp / "img", base, pre=pre, kept=(d / HISTORY / "img", d / "img"), open_url=open_url)
+        budget = DownloadBudget()
+        pre = prefetch(re.findall(r'<img[^>]*\ssrc="([^"]+)"', html), open_url=open_url, budget=budget)
+        images = Images(tmp / "img", base, pre=pre, kept=(d / HISTORY / "img", d / "img"), open_url=open_url, budget=budget)
         page, new = ids.freeze(semantic.normalize(html, resolve_img=images.resolve,
                                                   sizes=True), meta, old, ids.load(pid))
         (tmp / "source.html").write_text(page, encoding="utf-8")

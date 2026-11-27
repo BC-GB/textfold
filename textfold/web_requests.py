@@ -9,6 +9,7 @@ import ipaddress
 import socket
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -100,6 +101,7 @@ class PageRequests:
     @contextlib.contextmanager
     def open(self, request, timeout):
         url = request.full_url
+        deadline = time.monotonic() + timeout
         for hop in range(11):
             scheme, host, port = origin = _origin(url)
             addresses = self.addresses(origin)
@@ -114,7 +116,10 @@ class PageRequests:
                 for i, address in enumerate(addresses):
                     target = parts._replace(netloc=_authority(address, port, scheme), fragment="").geturl()
                     try:
-                        response = manager.urlopen("GET", target, headers=headers, timeout=timeout, retries=False,
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("download deadline exceeded")
+                        response = manager.urlopen("GET", target, headers=headers, timeout=remaining, retries=False,
                                                    redirect=False, preload_content=False, decode_content=False)
                         break
                     except urllib3.exceptions.ConnectTimeoutError:

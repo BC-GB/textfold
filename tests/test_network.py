@@ -38,7 +38,10 @@ class Response:
     def read(self, amt=None):
         if self.cut:
             raise http.client.IncompleteRead(self.body[:3])
-        return self.body if amt is None else self.body[:amt]
+        if amt is None:
+            amt = len(self.body)
+        result, self.body = self.body[:amt], self.body[amt:]
+        return result
 
     def geturl(self):
         return self.url
@@ -96,6 +99,17 @@ class Tries(unittest.TestCase):
             raise ValueError("web-pdf")
         got, waits, n = self.run_with(Response(), check=check)
         self.assertEqual((str(got), waits, n), ("web-pdf", [], 1))
+
+    def test_response_and_shared_image_limits(self):
+        got, _, _ = self.run_with(Response(b"words"), limit=4)
+        self.assertIsInstance(got, fetch.ResponseTooLarge)
+        got, _, _ = self.run_with(Response(b"words"), limit=4, truncate=True)
+        self.assertEqual(got[0], b"word")
+        budget = fetch.DownloadBudget(7)
+        got, _, _ = self.run_with(Response(b"word"), budget=budget)
+        self.assertEqual(got[0], b"word")
+        got, _, _ = self.run_with(Response(b"more"), budget=budget)
+        self.assertIsInstance(got, fetch.ResponseTooLarge)
 
 
 class Paper(unittest.TestCase):

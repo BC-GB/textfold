@@ -5,6 +5,7 @@ import http.client
 import json
 import re
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -29,6 +30,29 @@ def paper_id(ref):
 
 AGAIN = (1, 2, 5, 10)              # seconds before each new try: five in all, 18 s of waiting at most
 BUSY = {429, 500, 502, 503, 504}   # a server busy or briefly down: a later try is answered
+MAX_SOURCE = 50 * 1024 * 1024
+MAX_API = 5 * 1024 * 1024
+MAX_IMAGE = 15_000_000
+MAX_IMAGE_JOB = 250 * 1024 * 1024
+READ_CHUNK = 64 * 1024
+
+
+class ResponseTooLarge(ValueError):
+    def __init__(self):
+        super().__init__("response-too-large")
+
+
+class DownloadBudget:
+    """One byte allowance for the images fetched concurrently for a document."""
+    def __init__(self, limit=MAX_IMAGE_JOB):
+        self.remaining = limit
+        self.lock = threading.Lock()
+
+    def take(self, size):
+        with self.lock:
+            if size > self.remaining:
+                raise ResponseTooLarge()
+            self.remaining -= size
 
 
 class Unreachable(urllib.error.URLError):
@@ -54,34 +78,76 @@ def _later(e, wait):
         return wait
 
 
-def urlread(req, timeout=60, limit=None, check=None, busy=BUSY, again=AGAIN, open_url=None):
+def _remaining(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("download deadline exceeded")
+    return remaining
+
+
+def _read_body(response, limit, deadline, truncate, budget):
+    try:
+        length = int(response.headers.get("Content-Length") or -1)
+    except (TypeError, ValueError):
+        length = -1
+    if length > limit and not truncate:
+        raise ResponseTooLarge()
+    read = getattr(response, "read1", response.read)
+    body = bytearray()
+    while True:
+        remaining = _remaining(deadline)
+        stream = getattr(response, "fp", response)
+        sock = getattr(getattr(stream, "connection", None), "sock", None)
+        if sock is not None:
+            sock.settimeout(remaining)
+        room = limit - len(body)
+        chunk = read(min(READ_CHUNK, room + (not truncate)))
+        _remaining(deadline)
+        if not chunk:
+            return bytes(body)
+        if budget is not None:
+            budget.take(len(chunk))
+        if len(chunk) > room:
+            raise ResponseTooLarge()
+        body.extend(chunk)
+        if truncate and len(body) == limit:
+            return bytes(body)
+
+
+def urlread(req, timeout=60, limit=MAX_SOURCE, check=None, busy=BUSY, again=AGAIN, open_url=None, *, truncate=False, budget=None):
     """A request's body, its address after redirects, and its headers. A failure on the way (a connection dropped or
     reset, a TLS stream cut short, a timeout, no network) is tried again after `again`'s waits, and so is a busy
     server's answer (`busy`). An answer that will not change (404, 403, a certificate refused) is raised at once, as is
-    what `check` raises on the response, before its body is read. Every try failed on the way: Unreachable."""
+    what `check` raises on the response, before its body is read. Reads have a byte limit and share a deadline across
+    retries. Callers that explicitly allow truncation receive a prefix. Every try failed on the way: Unreachable."""
+    if limit < 1:
+        raise ValueError("invalid response limit")
     if isinstance(req, str):
         req = urllib.request.Request(req, headers=UA)
+    deadline = time.monotonic() + timeout
     for i in range(len(again) + 1):
         try:
-            with (open_url or urllib.request.urlopen)(req, timeout=timeout) as r:
+            with (open_url or urllib.request.urlopen)(req, timeout=_remaining(deadline)) as r:
                 if check:
                     check(r)
-                return (r.read() if limit is None else r.read(limit)), r.geturl(), r.headers
+                return _read_body(r, limit, deadline, truncate, budget), r.geturl(), r.headers
         except urllib.error.HTTPError as e:
-            if e.code not in busy or i == len(again):
+            if e.code not in busy or i == len(again) or time.monotonic() >= deadline:
                 raise
             wait = _later(e, again[i])
+            e.close()
         except (OSError, http.client.HTTPException) as e:   # (URLError is an OSError)
             if isinstance(e, ssl.SSLCertVerificationError) or isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
                 raise
-            if i == len(again):
+            if i == len(again) or time.monotonic() >= deadline:
                 raise Unreachable(urllib.parse.urlsplit(req.full_url).hostname or "", e) from e
             wait = again[i]
         time.sleep(wait)
+        deadline += wait
 
 
-def get(url):
-    data, final, _ = urlread(url, open_url=PUBLIC.open)
+def get(url, limit=MAX_SOURCE, budget=None):
+    data, final, _ = urlread(url, limit=limit, open_url=PUBLIC.open, budget=budget)
     return data, final
 
 
@@ -98,7 +164,7 @@ def fetch(pid, root: Path, force=False):
         tmp = src.with_name(f"source.html.{uuid.uuid4().hex[:8]}.part")   # (never half a page, if the disk fails)
         tmp.write_bytes(html)
         tmp.replace(src)
-    abs_html = get(f"https://arxiv.org/abs/{pid}")[0].decode("utf-8", "replace")
+    abs_html = get(f"https://arxiv.org/abs/{pid}", limit=MAX_API)[0].decode("utf-8", "replace")
     metas = re.findall(r'<meta name="citation_(\w+)" content="([^"]*)"', abs_html)
     lic = re.search(r'href="(https?://(?:arxiv\.org/licenses|creativecommons\.org)[^"]+)"', abs_html)
     version = re.search(r"/html/\d{4}\.\d{4,5}(v\d+)", final) or re.search(r'src="\d{4}\.\d{4,5}(v\d+)/', html.decode("utf-8", "replace"))
@@ -125,6 +191,7 @@ def fetch_images(srcs, base_url, out_dir: Path):
     """Download figure images next to the built page, four at a time, each kept smaller (picture.py; one kept before
     that, as it came, stays as it is); returns {original src: local path}."""
     from concurrent.futures import ThreadPoolExecutor
+    budget = DownloadBudget()
 
     from . import picture
 
@@ -141,7 +208,7 @@ def fetch_images(srcs, base_url, out_dir: Path):
             if target.scheme not in ("http", "https") or not target.hostname:
                 return s, None
             try:
-                data, kept = picture.compact(get(url)[0], name)
+                data, kept = picture.compact(get(url, limit=MAX_IMAGE, budget=budget)[0], name)
             except DestinationDenied:
                 return s, None
             f = out_dir / kept

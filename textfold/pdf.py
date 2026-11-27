@@ -56,7 +56,7 @@ def path(pid):
             return f
         for url in candidates(pid, meta):
             try:
-                data = urlread(urllib.request.Request(url, headers=UA), 90, LIMIT + 1, open_url=PUBLIC.open)[0]
+                data = urlread(urllib.request.Request(url, headers=UA), 90, LIMIT + 1, open_url=PUBLIC.open, truncate=True)[0]
             except (urllib.error.URLError, OSError, DestinationDenied):
                 continue
             if data[:5] == b"%PDF-" and len(data) <= LIMIT:

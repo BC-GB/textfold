@@ -84,7 +84,7 @@ class Ways(unittest.TestCase):
     def test_arxiv_figures(self):
         calls = []
 
-        def get(url):
+        def get(url, *, limit, budget):
             calls.append(url)
             return self.big, url
         self.img.mkdir()
