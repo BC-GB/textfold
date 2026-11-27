@@ -19,7 +19,6 @@ function render(font) {
 
 test('cold text rendering escapes font classes without changing valid classes', () => {
   assert.equal(render('ltx_font_italic'), '<span class="tr ltx_font_italic">Safe</span>');
-  const html = render('ltx_font_bad" onanimationstart="fetch(/api/agents/probe)');
-  assert.equal(html, '<span class="tr ltx_font_bad&quot; onanimationstart=&quot;fetch(/api/agents/probe)">Safe</span>');
-  assert.doesNotMatch(html, / onanimationstart="/);
+  const html = render('ltx_font_bad" data-test="embedded & text');
+  assert.equal(html, '<span class="tr ltx_font_bad&quot; data-test=&quot;embedded &amp; text">Safe</span>');
 });

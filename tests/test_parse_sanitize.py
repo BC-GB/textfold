@@ -113,7 +113,7 @@ class FontClassSanitizeTest(unittest.TestCase):
         return next(iter(doc["units"].values()))["toks"]
 
     def test_entity_decoded_quotes_do_not_become_font_metadata(self):
-        toks = self.tokens('ltx_font_italic&quot; onanimationstart=&quot;fetch(&quot;/api/agents/probe&quot;)')
+        toks = self.tokens('ltx_font_italic&quot; data-test=&quot;embedded')
         self.assertTrue(all("f" not in tok for tok in toks))
 
     def test_valid_font_classes_are_preserved(self):
