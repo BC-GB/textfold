@@ -82,8 +82,8 @@ def _record(folder):
 def choose(folder):
     """The folder the reader chose for the engine (Settings, the command line): a full path, and empty or not there yet,
     or an existing TextFold engine. Keep its files separate from unrelated contents."""
-    from .storage_settings import Refused, selected_folder
-    path = selected_folder(str(folder or ""))
+    from .storage_settings import Refused, recorded_folder, selected_folder
+    path = recorded_folder(folder) if isinstance(folder, Path) else selected_folder(str(folder or ""))
     if path.exists():
         if not path.is_dir():
             raise Refused("not_empty", "Choose an empty folder or an existing TextFold engine")

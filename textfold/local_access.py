@@ -9,12 +9,14 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import time
 
 from ._storage_layout import DirectoryFiles
 
 ANNOUNCEMENT = "server.json"
 _KEY = re.compile(r"[a-f0-9]{64}")
 _URL = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})")
+FOLDER_APPROVALS = {name: ".folder-approvals/" + name for name in ("library-copy", "library-existing", "engine-install")}
 
 
 def key():
@@ -42,10 +44,13 @@ def browser_password(secret):
 
 def show_browser_password(secret):
     """Deliver the requested credential to the operating system console."""
-    with open("CONOUT$" if os.name == "nt" else "/dev/tty", "w", encoding="ascii") as console:
-        if not console.isatty():
+    console = os.open("CONOUT$" if os.name == "nt" else "/dev/tty", os.O_WRONLY)
+    try:
+        if not os.isatty(console):
             raise OSError("An interactive console is required")
-        console.write(browser_password(secret) + "\n")
+        os.write(console, (browser_password(secret) + "\n").encode("ascii"))
+    finally:
+        os.close(console)
 
 
 def credentials(header, secret):
@@ -105,17 +110,17 @@ def publish(data, record, secret):
     return Path(data) / ANNOUNCEMENT
 
 
-def _read_private(path):
+def _read_private(path, limit=16_384):
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     if os.name == "posix":
         flags |= os.O_NOFOLLOW | os.O_NONBLOCK
     with os.fdopen(os.open(path, flags), "rb") as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 16_384:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             raise ValueError("Invalid local record")
         if os.name == "posix" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
             raise ValueError("The local record must be private to its owner")
-        return stream.read(16_385)
+        return stream.read(limit + 1)
 
 
 def discover(data):
@@ -162,3 +167,42 @@ def approved_agent(settings_dir, command):
         return approved if approved == command else None
     except (OSError, ValueError):
         return None
+
+
+def _folder_proof(secret, action, value):
+    signed = b"TextFold folder approval\0" + action.encode("ascii") + b"\0" + value
+    return hmac.new(secret.encode("ascii"), signed, hashlib.sha256).hexdigest().encode("ascii")
+
+
+def approve_folder(runtime, action, requested, secret):
+    """Record the canonical path approved from a native prompt or the user's terminal."""
+    from .storage_settings import selected_folder
+
+    if not 0 < len(requested) <= 32_768 or not requested.isprintable():
+        raise ValueError("Enter a folder path on one line.")
+    chosen = selected_folder(requested)
+    value = json.dumps([requested.strip(), str(chosen), int(time.time()) + 300]).encode("ascii")
+    seal = _folder_proof(secret, action, value) + b"\n" + value
+    DirectoryFiles(runtime).write(FOLDER_APPROVALS[action], _dpapi(seal) if os.name == "nt" else seal)
+
+
+def approved_folder(runtime, action, requested, secret):
+    """Read a recent approval for this operation and server launch."""
+    from .storage_settings import Refused
+
+    if not isinstance(requested, str) or not requested.strip():
+        raise Refused("path", "Enter an absolute folder path")
+    try:
+        data = _read_private(DirectoryFiles(runtime).path(FOLDER_APPROVALS[action]), limit=1_000_000)
+        if os.name == "nt":
+            data = _dpapi(data, decrypt=True)
+        signature, _, value = data.partition(b"\n")
+        if hmac.compare_digest(signature, _folder_proof(secret, action, value)):
+            original, chosen, expires = json.loads(value)
+            if original == requested.strip() and expires > time.time():
+                return Path(chosen)
+    except (OSError, ValueError, TypeError):
+        pass
+    raise Refused("folder_approval",
+                  f"Approve this folder in the desktop app or run 'python -m textfold approve-local-folder {action}' "
+                  "in a local terminal, enter the same path, and submit it again.")

@@ -7,26 +7,44 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import mock_open, patch
+from unittest.mock import patch
 
-from textfold import __main__ as cli, local_access, server
+from textfold import __main__ as cli, local_access, server, storage_settings
 
 
 class AccessRecord(unittest.TestCase):
     def test_local_access_sends_the_password_only_to_the_console(self):
         secret = local_access.key()
-        terminal = mock_open()
-        terminal.return_value.isatty.return_value = True
         with patch.object(cli.sys, "argv", ["textfold", "local-access"]), \
                 patch.object(cli.sys, "stdout") as stdout, patch.object(cli.sys, "stderr") as stderr, \
                 patch.object(local_access, "discover", return_value=("http://127.0.0.1:3017", secret)), \
-                patch.object(local_access, "open", terminal, create=True):
+                patch.object(os, "open", return_value=11) as opened, patch.object(os, "isatty", return_value=True), \
+                patch.object(os, "write") as write, patch.object(os, "close") as close:
             stdout.isatty.return_value = True
             cli.main()
-        terminal.assert_called_once_with("CONOUT$" if os.name == "nt" else "/dev/tty", "w", encoding="ascii")
-        terminal.return_value.write.assert_called_once_with(local_access.browser_password(secret) + "\n")
+        opened.assert_called_once_with("CONOUT$" if os.name == "nt" else "/dev/tty", os.O_WRONLY)
+        write.assert_called_once_with(11, (local_access.browser_password(secret) + "\n").encode("ascii"))
+        close.assert_called_once_with(11)
         stdout.write.assert_not_called()
         stderr.write.assert_not_called()
+
+    def test_folder_approval_is_bound_to_the_path_operation_and_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "library"
+            secret = local_access.key()
+            local_access.approve_folder(temporary, "library-copy", str(path), secret)
+            self.assertEqual(local_access.approved_folder(temporary, "library-copy", str(path), secret), path)
+            for action, requested, access in (
+                ("library-copy", str(path.with_name("other")), secret),
+                ("library-copy", str(path), local_access.key()),
+                ("library-existing", str(path), secret),
+            ):
+                with self.subTest(action=action), self.assertRaises(storage_settings.Refused) as error:
+                    local_access.approved_folder(temporary, action, requested, access)
+                self.assertEqual(error.exception.code, "folder_approval")
+            with patch.object(local_access.time, "time", return_value=local_access.time.time() + 301):
+                with self.assertRaises(storage_settings.Refused):
+                    local_access.approved_folder(temporary, "library-copy", str(path), secret)
 
     def test_record_is_bound_to_this_process_and_exact_loopback_origin(self):
         secret = local_access.key()

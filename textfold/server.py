@@ -694,6 +694,7 @@ def oauth_return_path(back):
 def make_handler(jobs, access_key):
     if not local_access.valid(access_key):
         raise ValueError("A local access key is required")
+    engine_settings = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         def send(self, code, body, ctype="application/json; charset=utf-8", cache="no-store", challenge=False):
@@ -971,9 +972,17 @@ def make_handler(jobs, access_key):
                 s = models.load_settings()
                 if u.path == "/api/storage":
                     try:
-                        return self.json(store.schedule_storage(body.get("path"), bool(body.get("cancel")), body.get("mode", "copy")))
+                        mode = body.get("mode", "copy")
+                        if body.get("cancel"):
+                            return self.json(store.schedule_storage(cancel=True))
+                        if mode not in ("copy", "existing"):
+                            raise ValueError("Choose copy or existing library")
+                        action = "library-existing" if mode == "existing" else "library-copy"
+                        folder = local_access.approved_folder(store.DATA, action, body.get("path"), access_key)
+                        return self.json(store.schedule_storage(folder, mode=mode))
                     except (OSError, ValueError) as error:   # (why, in the reader's language: its code)
-                        return self.json({"error": str(error), "code": getattr(error, "code", "")}, 400)
+                        code = getattr(error, "code", "")
+                        return self.json({"error": str(error), "code": code}, 403 if code == "folder_approval" else 400)
 
                 if u.path == "/api/generate":
                     lang = body.get("lang") or None   # (none: the language it is written in, its own levels)
@@ -1011,18 +1020,22 @@ def make_handler(jobs, access_key):
                         zotero.apply(pid)   # (read at once, or read before: its record now; else once converted)
                     return self.json({**reply, "name": got["name"]}, code)
                 if u.path == "/api/engine/install":   # (with a path: into that folder, chosen in Settings)
-                    if body.get("path"):
-                        if jobs._same(kind="install") or engine.where():
-                            return self.json({"error": "busy"}, 409)
-                        try:
-                            engine.choose(body["path"])
-                        except ValueError as error:   # (why, in the reader's language: its code)
-                            return self.json({"error": str(error), "code": getattr(error, "code", "")}, 400)
-                    return self.json(jobs.install_engine())
+                    with engine_settings:
+                        if body.get("path"):
+                            if jobs._same(kind="install") or engine.where():
+                                return self.json({"error": "busy"}, 409)
+                            try:
+                                folder = local_access.approved_folder(store.DATA, "engine-install", body["path"], access_key)
+                                engine.choose(folder)
+                            except (OSError, ValueError) as error:   # (why, in the reader's language: its code)
+                                code = getattr(error, "code", "")
+                                return self.json({"error": str(error), "code": code}, 403 if code == "folder_approval" else 400)
+                        return self.json(jobs.install_engine())
                 if u.path == "/api/engine/remove":
-                    if any(j["kind"] in ("install", "convert") and j["status"] in ("queued", "running") for j in jobs.items.values()):
-                        return self.json({"error": "busy"}, 409)
-                    return self.json(engine.uninstall())
+                    with engine_settings:
+                        if any(j["kind"] in ("install", "convert") and j["status"] in ("queued", "running") for j in jobs.items.values()):
+                            return self.json({"error": "busy"}, 409)
+                        return self.json(engine.uninstall())
                 if u.path == "/api/convert":   # a stored PDF (or picture) converted again, at another tier (its levels follow)
                     pid, tier = str(body.get("paper") or ""), str(body.get("tier") or "accurate")
                     src = pdfdoc.source_of(pid) if pid.startswith(("pdf-", "doc-")) and store.valid_id(pid) else None

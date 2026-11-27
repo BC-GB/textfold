@@ -153,7 +153,8 @@ def status(root, home):
 
 
 def _target(source, target, mode="copy"):
-    path, source = selected_folder(target), Path(source).resolve()
+    path = recorded_folder(target) if isinstance(target, Path) else selected_folder(target)
+    source = Path(source).resolve()
     if path == source:
         return path
     if path.is_relative_to(source) or source.is_relative_to(path):

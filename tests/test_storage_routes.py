@@ -64,11 +64,18 @@ class StorageRoutes(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
 
+    def approve_destination(self):
+        result = subprocess.run([sys.executable, "-m", "textfold", "approve-local-folder", "library-copy"],
+                                input=str(self.target) + "\n", text=True, encoding="utf-8", capture_output=True,
+                                cwd=Path(__file__).resolve().parent.parent, env=self.env, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_settings_restart_and_existing_document_are_preserved(self):
         _, imported = self.call("/api/import", {"name": "notes.md", "text": "# Original \U0001f4da\n\nKeep this text.\n"})
         pid = imported["paper"]
         source = self.data / "papers" / pid / "source.md"
         before = source.read_bytes()
+        self.approve_destination()
         code, status = self.call("/api/storage", {"path": str(self.target)})
         self.assertEqual((code, status["path"], status["pending"]), (200, str(self.data), str(self.target)))
         self.assertFalse(self.target.exists())
@@ -87,8 +94,9 @@ class StorageRoutes(unittest.TestCase):
         self.assertEqual(len(list((self.target / "papers").glob("*/meta.json"))), 3)
 
     def test_bad_destination_and_cancel_do_not_change_the_active_library(self):
-        code, refused = self.call("/api/storage", {"path": "relative"})
-        self.assertEqual((code, refused["code"]), (400, "path"))
+        code, refused = self.call("/api/storage", {"path": str(self.target)})
+        self.assertEqual((code, refused["code"]), (403, "folder_approval"))
+        self.approve_destination()
         self.call("/api/storage", {"path": str(self.target)})
         code, status = self.call("/api/storage", {"cancel": True})
         self.assertEqual((code, status["path"], status["pending"]), (200, str(self.data), ""))
@@ -98,6 +106,7 @@ class StorageRoutes(unittest.TestCase):
 
     def test_a_failed_startup_copy_keeps_the_old_library_accessible(self):
         self.call("/api/import", {"name": "old.md", "text": "# Old\n\nStill readable."})
+        self.approve_destination()
         self.call("/api/storage", {"path": str(self.target)})
         self.target.mkdir()
         (self.target / "unrelated.txt").write_bytes(b"do not overwrite")

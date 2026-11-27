@@ -179,6 +179,22 @@ def main():
         except (OSError, ValueError) as error:
             sys.exit(str(error))
         return print("Custom agent command approved.")
+    if sys.argv[1:2] == ["approve-local-folder"]:
+        from . import local_access, store
+        parser = argparse.ArgumentParser(prog="textfold approve-local-folder")
+        parser.add_argument("action", choices=local_access.FOLDER_APPROVALS)
+        action = parser.parse_args(sys.argv[2:]).action
+        session = local_access.discover(store.DATA)
+        if not session:
+            sys.exit("Start TextFold using the same library before approving a folder.")
+        if sys.stdin.isatty():
+            print("Enter the folder path shown in TextFold Settings.", flush=True)
+        try:
+            requested = sys.stdin.readline(32_770).rstrip("\r\n")
+            local_access.approve_folder(store.DATA, action, requested, session[1])
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.exit(str(error))
+        return print("Folder approved for this TextFold session.")
     if len(sys.argv) > 1 and sys.argv[1] == "get":
         from .fold import LEVELS
         ap = argparse.ArgumentParser(prog="python3 -m textfold get", description="A document at one level: the map first, then the parts that matter, deeper.")

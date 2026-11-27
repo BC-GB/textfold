@@ -285,22 +285,45 @@ function handleReader(channel, handler) {
 }
 
 handleReader('open-external', (_e, url) => (/^https?:/.test(url) ? shell.openExternal(url) : null));
+function runLocalApproval(args, value) {
+  return new Promise((resolve) => {
+    const p = spawn(PYTHON, ['-s', '-X', 'utf8', '-m', 'textfold', ...args], {
+      cwd: CODE, env: { ...process.env, TEXTFOLD_DATA: app.getPath('userData') },
+      stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true,
+    });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+    p.stdin.on('error', () => resolve(false));
+    p.stdin.end(value + '\n', 'utf8');
+  });
+}
+
 handleReader('agent:approve', async (_e, command) => {
   if (typeof command !== 'string' || !command || command.length > 2048 || /[\r\n\0]/.test(command)) return false;
   const selection = await dialog.showMessageBox(win, {
     type: 'warning', buttons: ['Cancel', 'Allow command'], defaultId: 0, cancelId: 0,
     message: 'Allow this custom agent command in TextFold?', detail: command,
   });
-  if (selection.response !== 1) return false;
-  return new Promise((resolve) => {
-    const p = spawn(PYTHON, ['-s', '-X', 'utf8', '-m', 'textfold', 'approve-local-agent'], {
-      cwd: CODE, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true,
-    });
-    p.on('error', () => resolve(false));
-    p.on('exit', (code) => resolve(code === 0));
-    p.stdin.on('error', () => resolve(false));
-    p.stdin.end(command + '\n', 'utf8');
+  return selection.response === 1 && runLocalApproval(['approve-local-agent'], command);
+});
+const FOLDER_ACTIONS = new Map([
+  ['library-copy', 'Copy the TextFold library to this folder on restart?'],
+  ['library-existing', 'Open the TextFold library from this folder on restart?'],
+  ['engine-install', 'Use this folder for the TextFold PDF engine?'],
+]);
+handleReader('storage:approve-folder', async (_e, action, folder) => {
+  if (!FOLDER_ACTIONS.has(action) || typeof folder !== 'string' || folder.length > 32768 || /[\p{C}]/u.test(folder)) {
+    throw new Error('Enter a folder path on one line.');
+  }
+  const selection = await dialog.showMessageBox(win, {
+    type: 'question', buttons: ['Cancel', 'Use this folder'], defaultId: 0, cancelId: 0,
+    message: FOLDER_ACTIONS.get(action), detail: folder,
   });
+  if (selection.response !== 1) return false;
+  if (!await runLocalApproval(['approve-local-folder', action], folder)) {
+    throw new Error('TextFold could not approve this folder. Choose an absolute path and try again.');
+  }
+  return true;
 });
 // a file the reader saves (a page, its notes, a figure's picture): where it goes, they choose in the system's own
 // dialog; the path, or null. A page is text, a picture its bytes

@@ -2204,8 +2204,7 @@
       if (storageInput) storageInput.oninput = () => { storageDraft = storageInput.value; };
       if (storageInput) storageInput.onkeydown = (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); saveLibrary(); } };
       if (storageSelect) storageSelect.onchange = () => { storageMode = storageSelect.value; };
-      // a folder chosen in the system's dialog is the choice made: kept at once for the next start, as the line under it
-      // says (#67: chosen, and the button under the explanation not pressed, it was gone after the restart)
+      // Start saving from the folder picker too, so its approved choice is kept for the next start.
       const pickLibrary = q('.st-storage-pick');
       if (pickLibrary) pickLibrary.onclick = async () => {
         try { const path = await window.desktop.chooseLibraryFolder(); if (path) { storageDraft = path; await saveLibrary(); } }
@@ -2213,9 +2212,15 @@
       };
       async function saveLibrary(cancel = false) {
         storageBusy = true; storageError = null; render();
-        try { data.storage = await api('/api/storage', { path: storageDraft ?? data.storage.pending, mode: storageMode ?? data.storage.mode, cancel }); }
+        try {
+          const path = storageDraft ?? data.storage.pending;
+          const mode = storageMode ?? data.storage.mode;
+          if (!cancel && path?.trim() && window.desktop?.approveFolder &&
+              !await window.desktop.approveFolder('library-' + mode, path)) return;
+          data.storage = await api('/api/storage', { path, mode, cancel });
+        }
         catch (error) { storageError = { code: error.code, message: error.message }; }
-        storageBusy = false; render();
+        finally { storageBusy = false; render(); }
       }
       const saveLibraryButton = q('.st-storage-save'), cancelLibraryButton = q('.st-storage-cancel');
       if (saveLibraryButton) saveLibraryButton.onclick = () => saveLibrary();
@@ -2257,7 +2262,15 @@
       if (inst) inst.onclick = async () => {
         inst.disabled = true; engineError = null;
         const path = (engineDraft ?? '').trim();
-        try { watch(await api('/api/engine/install', path && path !== e.path ? { path } : {}), () => {}); engineDraft = null; follow(); }
+        try {
+          const custom = path && path !== e.path;
+          if (custom && window.desktop?.approveFolder && !await window.desktop.approveFolder('engine-install', path)) {
+            renderEngine();
+            return;
+          }
+          watch(await api('/api/engine/install', custom ? { path } : {}), () => {});
+          engineDraft = null; follow();
+        }
         catch (x) { engineError = { code: x.code, message: errText(x.message) }; renderEngine(); }
       };
       const where = box.querySelector('.st-engine-path'), pick = box.querySelector('.st-engine-pick');

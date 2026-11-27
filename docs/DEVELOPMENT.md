@@ -35,6 +35,10 @@ shows the password on the interactive console. Local HTTP clients use the separa
 its exact command into `python3 -m textfold approve-local-agent` before detecting it in Settings.
 On Windows, launch agents with a native executable or a supported npm shim so arguments are passed directly.
 
+A custom library or PDF engine folder needs confirmation in the desktop app whenever you select it. In a standalone
+browser, run `python3 -m textfold approve-local-folder` with `library-copy`, `library-existing`, or `engine-install`
+as indicated by Settings. Enter the same absolute path and submit the change in Settings within five minutes.
+
 The landing takes a link or ID (arXiv, PubMed Central, Europe PMC, bioRxiv, medRxiv, a DOI, Wikipedia), or a Markdown
 file (the dashed box under the bar, or dropped anywhere on the page), and a language; a line under the bar names
 the sources it reads; the sidebar lists every paper generated so far. In a paper,
