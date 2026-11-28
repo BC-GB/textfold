@@ -27,8 +27,13 @@ jobs:
     name: Compose smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    steps:
+    steps: &compose-steps
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
       - run: python3 docker/smoke.py
+  compose-arm64:
+    name: Compose smoke test (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps: *compose-steps

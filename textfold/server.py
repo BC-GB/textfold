@@ -659,11 +659,10 @@ def addressed_here(host):
     return bool(m) and m.group(1) in LOCAL_NAMES
 
 
-def from_other_site(headers):
+def from_other_site(headers, here):
     site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
     if site and site not in ("same-origin", "none"):
         return True
-    here = "http://" + headers["Host"]
     return any(not llm_openai.same_origin(value, here)
                for name in ("Origin", "Referer") if (value := headers.get(name)))
 
@@ -691,12 +690,36 @@ def oauth_return_path(back):
     return back
 
 
-def make_handler(jobs, access_key):
+def make_handler(jobs, access_key, *, tailscale_host=""):
     if not local_access.valid(access_key):
         raise ValueError("A local access key is required")
+    tailscale_host = tailscale_host.lower()
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    if tailscale_host and not re.fullmatch(rf"{label}\.{label}\.ts\.net", tailscale_host):
+        raise ValueError("TEXTFOLD_TAILSCALE_HOST must be a Tailscale hostname without a scheme, port, or path")
+    private_origin = f"https://{tailscale_host}" if tailscale_host else None
     engine_settings = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
+        def request_origin(self):
+            hosts = self.headers.get_all("Host", [])
+            if len(hosts) != 1:
+                return None
+            host = hosts[0]
+            if addressed_here(host):
+                return f"http://{host}"
+            # Serve preserves the host when proxying to the loopback TCP port.
+            # Derive the HTTPS origin from configuration, independent of forwarded headers.
+            if private_origin and host.lower() in (tailscale_host, f"{tailscale_host}:443"):
+                return private_origin
+            return None
+
+        def request_credentials(self, here):
+            auth = local_access.credentials(self.headers.get("Authorization"), access_key)
+            if here == private_origin and auth != "basic":
+                return None
+            return auth
+
         def send(self, code, body, ctype="application/json; charset=utf-8", cache="no-store", challenge=False):
             data = body if isinstance(body, bytes) else body.encode("utf-8")
             self.send_response(code)
@@ -724,22 +747,24 @@ def make_handler(jobs, access_key):
                 self.get()
 
         def get(self):
-            if not addressed_here(self.headers.get("Host")):   # (DNS rebinding: the module's docstring)
+            here = self.request_origin()
+            if here is None:   # (DNS rebinding: the module's docstring)
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
-            auth = local_access.credentials(self.headers.get("Authorization"), access_key)
-            openrouter = re.fullmatch(r"/oauth/openrouter/([a-f0-9]{64})", u.path)
-            oauth = openrouter or u.path in (chatgpt.CALLBACK, chatgpt.CALLBACK + "/done")
+            auth = self.request_credentials(here)
+            local_request = here != private_origin
+            openrouter = local_request and re.fullmatch(r"/oauth/openrouter/([a-f0-9]{64})", u.path)
+            oauth = local_request and (openrouter or u.path in (chatgpt.CALLBACK, chatgpt.CALLBACK + "/done"))
             # Electron starts its main window from a local splash file, which Chromium treats as another site.
             native_page = (auth == "bearer" and self.headers.get("Sec-Fetch-Mode") == "navigate"
                            and self.headers.get("Sec-Fetch-Dest") == "document"
                            and (u.path == "/" or re.fullmatch(r"/p/[\w.-]+", u.path)))
-            if not oauth and not native_page and from_other_site(self.headers):
+            if not oauth and not native_page and from_other_site(self.headers, here):
                 return self.json({"error": "forbidden"}, 403)
             try:
-                if u.path == chatgpt.CALLBACK:
+                if oauth and u.path == chatgpt.CALLBACK:
                     return self.chatgpt_callback(u.query)
-                if u.path == chatgpt.CALLBACK + "/done":
+                if oauth and u.path == chatgpt.CALLBACK + "/done":
                     return self.send(200, '<!doctype html><meta charset="utf-8"><title>TextFold</title>'
                                      '<main><h1>Return to TextFold</h1><p>You can close this browser tab.</p></main>',
                                      "text/html; charset=utf-8")
@@ -931,19 +956,22 @@ def make_handler(jobs, access_key):
                 self.post()
 
         def post(self):
-            if not addressed_here(self.headers.get("Host")):
+            here = self.request_origin()
+            if here is None:
                 return self.json({"error": "misdirected"}, 421)
             u = urlparse(self.path)
             origin = self.headers.get("Origin")
             if self.headers.get("Sec-Fetch-Site") == "cross-site" or (
-                origin and not llm_openai.same_origin(origin, "http://" + self.headers["Host"])
+                origin and not llm_openai.same_origin(origin, here)
             ):
                 return self.json({"error": "forbidden"}, 403)  # another site may not drive this server
-            auth = local_access.credentials(self.headers.get("Authorization"), access_key)
+            auth = self.request_credentials(here)
             if not auth:
                 return self.json({"error": "TextFold local access required"}, 401)
             if auth == "basic" and not origin:
                 return self.json({"error": "A browser request must be made from TextFold."}, 403)
+            if here == private_origin and u.path in ("/api/chatgpt/start", "/api/openrouter/start"):
+                return self.json({"error": "Start this sign-in from a local TextFold session."}, 403)
             try:
                 try:
                     size = int(self.headers.get("Content-Length") or 0)
@@ -1471,11 +1499,12 @@ def serve(port=3017, *, scan_agents=True, open_browser=False):
         _quiet_children()
     store.initialize_storage(log=lambda line: print(line, flush=True))   # (a library moved in Settings: copied now, once)
     jobs = Jobs()
+    handler = make_handler(jobs, access_key, tailscale_host=os.environ.get("TEXTFOLD_TAILSCALE_HOST", ""))
     # look for the agents on this computer while the server comes up, and erase what was deleted 30 days ago
     if scan_agents:
         threading.Thread(target=agents.scan, kwargs={"log": print}, daemon=True).start()
     threading.Thread(target=store.empty_trash, daemon=True).start()
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(jobs, access_key))
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     port = httpd.server_address[1]   # (the one given, or the free one the system chose for 0)
 
     def killed(signum, frame):

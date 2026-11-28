@@ -1,7 +1,7 @@
 """DNS rebinding: a web page that points its own domain at 127.0.0.1 is, to the browser, the same origin as its requests
 to TextFold's server, and could read the library (its documents, their PDFs, the notes). Only the name the requests
-are addressed to tells them apart, so the server answers a request addressed to this computer alone (localhost,
-127.0.0.1, [::1]) and every other one with 421. On a server of its own (its own HOME and data folder, no model).
+are addressed to tells them apart. The server accepts loopback hosts and a single explicitly configured Tailscale
+Serve hostname. On a server of its own (its own HOME and data folder, no model).
 
 Run from the repo root:
     python3 -m unittest discover tests
@@ -25,6 +25,7 @@ from unittest.mock import patch
 from textfold import bridges, local_access, server
 
 ROOT = Path(__file__).resolve().parent.parent
+TAILSCALE_HOST = "textfold.example.ts.net"
 
 
 def free_port():
@@ -43,6 +44,11 @@ class Names(unittest.TestCase):
                      "localhost:31917@attacker.example", "[::1].attacker.example", "127.0.0.2:3017", "0.0.0.0:3017",
                      "localhost:abc", "", None):
             self.assertFalse(server.addressed_here(host), host)
+
+    def test_configured_tailscale_host_must_be_an_exact_hostname(self):
+        for host in (f"https://{TAILSCALE_HOST}", "*.example.ts.net", f"{TAILSCALE_HOST}:443", "example.com"):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                server.make_handler(None, KEY, tailscale_host=host)
 
 
 class ProviderSettings(unittest.TestCase):
@@ -82,7 +88,8 @@ class Rebinding(unittest.TestCase):
         home.mkdir()
         cls.port = free_port()
         env = {**os.environ, "TEXTFOLD_LOCAL_ACCESS": KEY, "HOME": str(home), "USERPROFILE": str(home), "LOCALAPPDATA": str(home / "AppData" / "Local"),
-               "TEXTFOLD_DATA": str(Path(cls.tmp.name) / "data"), "TEXTFOLD_NO_MODELS": "1", "PYTHONUSERBASE": site.getuserbase()}
+               "TEXTFOLD_DATA": str(Path(cls.tmp.name) / "data"), "TEXTFOLD_NO_MODELS": "1", "PYTHONUSERBASE": site.getuserbase(),
+               "TEXTFOLD_TAILSCALE_HOST": TAILSCALE_HOST}
         cls.proc = subprocess.Popen([sys.executable, "-m", "textfold", "serve", "--port", str(cls.port)], cwd=ROOT, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
@@ -104,7 +111,10 @@ class Rebinding(unittest.TestCase):
     def ask(self, method, path, host, body=None, origin=None, *, headers=None, authorization=None):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         c.putrequest(method, path, skip_host=True)
-        c.putheader("Authorization", authorization or AUTH["Authorization"])
+        if authorization is None:
+            authorization = AUTH["Authorization"]
+        if authorization:
+            c.putheader("Authorization", authorization)
         if host is not None:
             c.putheader("Host", host)
         if origin:
@@ -161,6 +171,30 @@ class Rebinding(unittest.TestCase):
             self.assertEqual(status, 200, host)
             self.assertIn("private draft".encode(), data)
         self.assertEqual(self.ask("GET", "/api/papers", None)[0], 421)   # (no name at all: not a browser's)
+
+    def test_private_https_browser_origin_uses_the_session_password(self):
+        password = local_access.browser_password(KEY)
+        browser = "Basic " + base64.b64encode(f"textfold:{password}".encode()).decode()
+        here = f"https://{TAILSCALE_HOST}"
+        for credential in ("", AUTH["Authorization"]):
+            self.assertEqual(self.ask("GET", "/api/papers", TAILSCALE_HOST, authorization=credential)[0], 401)
+        for host in (TAILSCALE_HOST.upper(), f"{TAILSCALE_HOST}:443"):
+            self.assertEqual(self.ask("GET", "/api/papers", host, authorization=browser)[0], 200)
+        for host in ("other.example.ts.net", f"{TAILSCALE_HOST}:3017", f"{TAILSCALE_HOST}.other.example"):
+            self.assertEqual(self.ask("GET", "/api/papers", host, authorization=browser,
+                                      headers={"X-Forwarded-Host": TAILSCALE_HOST, "X-Forwarded-Proto": "https"})[0], 421)
+
+        doc = {"name": "private-host.md", "text": "# Tailnet reader\n\nA synthetic sample."}
+        for origin in (None, f"http://{TAILSCALE_HOST}", "https://other.example.ts.net"):
+            self.assertEqual(self.ask("POST", "/api/import", TAILSCALE_HOST, doc, origin, authorization=browser)[0], 403)
+        status, data = self.ask("POST", "/api/import", TAILSCALE_HOST, doc, here, authorization=browser)
+        self.assertEqual(status, 200)
+        path = "/p/" + json.loads(data)["paper"]
+        self.assertIn(b"Tailnet reader", self.ask("GET", path, TAILSCALE_HOST, authorization=browser)[1])
+
+    def test_private_host_does_not_use_local_oauth_exceptions(self):
+        self.assertEqual(self.ask("GET", "/oauth/chatgpt/done", TAILSCALE_HOST, authorization="")[0], 401)
+        self.assertEqual(self.ask("GET", "/oauth/openrouter/" + KEY, TAILSCALE_HOST, authorization="")[0], 401)
 
     def test_electron_can_open_a_top_level_reader_from_its_splash(self):
         host = f"127.0.0.1:{self.port}"
