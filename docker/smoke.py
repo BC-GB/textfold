@@ -54,10 +54,12 @@ def terminal_output(command, environment):
     return captured
 
 
-def request(port, path, *, password=None, data=None, origin=None, host=None):
+def request(port, path, *, password=None, data=None, origin=None, host=None, reader=None):
     headers = {"Host": host} if host else {}
     if password is not None:
         headers["Authorization"] = "Basic " + base64.b64encode(b"textfold:" + password).decode("ascii")
+    if reader is not None:
+        headers["X-TextFold-ChatGPT"] = reader
     if data is not None:
         headers["Content-Type"] = "application/json"
         headers["Origin"] = origin or f"http://127.0.0.1:{port}"
@@ -78,8 +80,8 @@ def main():
     environment = {**os.environ, "TEXTFOLD_PORT": str(port), "TEXTFOLD_TAILSCALE_HOST": TAILSCALE_HOST}
     command = ["docker", "compose", "-p", project, "-f", "compose.yml"]
 
-    def compose(*args, online=False, check=True):
-        prefix = command + (["-f", "compose.online.yml"] if online else [])
+    def compose(*args, profile=None, check=True):
+        prefix = command + (["-f", f"compose.{profile}.yml"] if profile else [])
         return subprocess.run(prefix + list(args), cwd=ROOT, env=environment, timeout=360, check=check)
 
     def browser_password():
@@ -89,6 +91,7 @@ def main():
         return candidates[0].strip()
 
     os.chdir(ROOT)
+    profile = None
     try:
         compose("up", "--build", "-d", "--wait", "--wait-timeout", "120")
         compose(
@@ -125,20 +128,58 @@ def main():
         assert b"Docker smoke test" in request(port, path, password=updated)[1]
         print("Offline browser login, import, isolation and library persistence passed.")
 
-        compose("up", "-d", "--wait", "--wait-timeout", "120", online=True)
+        profile = "online"
+        compose("up", "-d", "--wait", "--wait-timeout", "120", profile=profile)
         compose(
             "exec", "-T", "textfold", "python", "-c",
             "import os, socket; assert not os.getenv('TEXTFOLD_NO_MODELS'); "
             "assert any(name != 'lo' for _, name in socket.if_nameindex())",
-            online=True,
+            profile=profile,
         )
         assert b"Docker smoke test" in request(port, path, password=browser_password())[1]
         print("The online override started with the same library and local browser access.")
+
+        profile = "chatgpt"
+        compose("up", "--build", "-d", "--wait", "--wait-timeout", "120", profile=profile)
+        compose("exec", "-T", "textfold", "python", "-c", """
+import os
+import socket
+from urllib.error import HTTPError
+from urllib.request import Request
+from textfold import openai_transport
+
+assert [name for _, name in socket.if_nameindex()] == ["lo"]
+assert os.statvfs("/run/textfold-openai").f_flag & os.ST_RDONLY
+try:
+    openai_transport.open_request(os.environ[openai_transport.SOCKET_ENV], Request("https://example.invalid"), 2)
+except HTTPError as error:
+    assert error.code == 403, error.code
+else:
+    raise AssertionError("The OpenAI gateway accepted an unrelated destination")
+""", profile=profile)
+        compose(
+            "exec", "-T", "openai", "python", "-c",
+            "import os; from pathlib import Path; "
+            "assert os.getuid() == 10001; "
+            "assert os.statvfs('/opt/textfold-docker').f_flag & os.ST_RDONLY; "
+            "assert not Path('/data').exists(); "
+            "assert not Path('/var/run/docker.sock').exists()",
+            profile=profile,
+        )
+        password = browser_password()
+        start = "/api/chatgpt/start"
+        reader = secrets.token_hex(32)
+        status, body = request(port, start, password=password, data=b"{}", reader=reader)
+        assert status == 200 and json.loads(body)["url"].startswith("https://auth.openai.com/"), status
+        assert request(port, start, password=password, data=b"{}", reader=reader, host=TAILSCALE_HOST,
+                       origin=f"https://{TAILSCALE_HOST}")[0] == 403
+        assert b"Docker smoke test" in request(port, path, password=password, host=TAILSCALE_HOST)[1]
+        print("The ChatGPT override retained the library and denied unrelated egress and remote OAuth starts.")
     except BaseException:
-        compose("logs", "--tail", "25", check=False)
+        compose("logs", "--tail", "25", profile=profile, check=False)
         raise
     finally:
-        compose("down", "--volumes", "--remove-orphans", online=True, check=False)
+        compose("down", "--volumes", "--remove-orphans", profile="chatgpt", check=False)
 
 
 if __name__ == "__main__":

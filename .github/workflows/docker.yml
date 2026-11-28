@@ -7,6 +7,7 @@ on:
       - .dockerignore
       - .github/workflows/docker.yml
       - docker/**
+      - tests/test_openai_transport.py
       - textfold/**
       - requirements.txt
   push:
@@ -16,6 +17,7 @@ on:
       - .dockerignore
       - .github/workflows/docker.yml
       - docker/**
+      - tests/test_openai_transport.py
       - textfold/**
       - requirements.txt
 
@@ -31,6 +33,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - run: python3 -m unittest discover -s tests -p test_openai_transport.py
       - run: python3 docker/smoke.py
   compose-arm64:
     name: Compose smoke test (arm64)

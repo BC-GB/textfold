@@ -15,12 +15,27 @@ Import a sample file from the browser to try the reader. Compose keeps your libr
 
 To refresh Debian security updates when Docker has cached the build, run `docker compose build --no-cache` followed by `docker compose up -d --wait`.
 
+## Sign in with ChatGPT
+
+Use the ChatGPT override to keep the reader's network isolated while using your ChatGPT plan. A separate gateway has no published ports and no library access. It accepts requests through a private socket. It forwards only verified HTTPS calls to OpenAI for sign-in, token refresh and revocation, and text model discovery and generation.
+
+```text
+docker compose -f compose.yml -f compose.chatgpt.yml up --build -d --wait
+docker compose exec textfold python -m textfold local-access
+```
+
+Open **http://127.0.0.1:3017** on the Docker host and choose **Continue with ChatGPT** in Settings. OpenAI handles sign-in in your browser and asks separately whether to share plan usage. Choose a model after you grant plan usage and try one request with a sample document. The sign-in and plan connection belong to the browser session that opens them.
+
+OpenAI receives the text included in your model requests. Those requests can use the plan access you grant. Check the app's usage controls in ChatGPT and keep credit spending off to avoid additional charges. [ChatGPT plan usage in other apps](https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites)
+
+This profile leaves online sources, other providers and optional engine downloads without network access. To return to offline reading and stop the OpenAI gateway, run `docker compose up -d --wait --remove-orphans`. You can revoke the grant from the originating TextFold session or from ChatGPT settings.
+
 ## Online sources and AI
 
 Use the online override when you want the reader to fetch web sources, use a model, or install an optional PDF engine. It gives the reader outbound network access. Your browser connection and library volume stay the same.
 
 ```text
-docker compose -f compose.yml -f compose.online.yml up --build -d --wait
+docker compose -f compose.yml -f compose.online.yml up --build -d --wait --remove-orphans
 docker compose exec textfold python -m textfold local-access
 ```
 
@@ -38,9 +53,4 @@ Enable Tailscale Serve on the host and target `http://127.0.0.1:3017`. Save the 
 TEXTFOLD_TAILSCALE_HOST=textfold.example.ts.net
 ```
 
-```sh
-docker compose up --build -d --wait
-docker compose exec textfold python -m textfold local-access
-```
-
-Open the Serve HTTPS URL from a device signed in to your tailnet and use the same TextFold browser credentials. TextFold authorizes only the configured HTTPS host and local loopback hosts. Starting ChatGPT or OpenRouter sign-in requires a local browser session for its OAuth callback.
+Apply the hostname by rerunning the startup command for your chosen Compose profile. Open the Serve HTTPS URL from a device signed in to your tailnet and use the same TextFold browser credentials. TextFold authorizes only the configured HTTPS host and local loopback hosts. Starting ChatGPT or OpenRouter sign-in requires a local browser session for its OAuth callback. The iPad can read, import, and annotate through Serve using its own reader session.

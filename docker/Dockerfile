@@ -14,6 +14,14 @@ USER textfold
 ENTRYPOINT ["python", "-I", "-B", "/opt/textfold-docker/transport.py"]
 CMD ["browser"]
 
+FROM browser AS openai
+USER root
+RUN install -d -o textfold -g textfold -m 0700 /run/textfold-openai
+COPY --chmod=0644 textfold/openai_transport.py /opt/textfold-docker/openai_transport.py
+USER textfold
+ENTRYPOINT ["python", "-I", "-B", "/opt/textfold-docker/openai_transport.py"]
+CMD []
+
 FROM browser AS reader
 USER root
 COPY docker/requirements-linux.txt /opt/textfold-docker/requirements-linux.txt
