@@ -1,0 +1,5 @@
+services:
+  textfold:
+    network_mode: bridge
+    environment:
+      TEXTFOLD_NO_MODELS: ""

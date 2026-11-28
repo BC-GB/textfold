@@ -116,6 +116,8 @@ The button reads a page only when you click it, and hands it to TextFold on this
 
 Use the source instructions below to run this fork. The upstream project offers a packaged app and a Python release.
 
+**[Run this fork in Docker](docs/DOCKER.md)** to use the reader in your browser. The default Docker session keeps document processing offline.
+
 **[Download the upstream app](https://chenxiachan.github.io/textfold/#download)** for macOS (Apple silicon or Intel) or Windows. Everything it needs is inside, Python included.
 
 Or install the Python package, on any system and for your own pipeline:
