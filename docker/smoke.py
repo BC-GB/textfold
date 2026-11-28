@@ -17,6 +17,7 @@ import time
 from contextlib import suppress
 
 ROOT = Path(__file__).resolve().parents[1]
+TAILSCALE_HOST = "textfold.example.ts.net"
 
 
 def terminal_output(command, environment):
@@ -53,8 +54,8 @@ def terminal_output(command, environment):
     return captured
 
 
-def request(port, path, *, password=None, data=None, origin=None):
-    headers = {}
+def request(port, path, *, password=None, data=None, origin=None, host=None):
+    headers = {"Host": host} if host else {}
     if password is not None:
         headers["Authorization"] = "Basic " + base64.b64encode(b"textfold:" + password).decode("ascii")
     if data is not None:
@@ -74,7 +75,7 @@ def main():
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     project = "textfold-smoke-" + secrets.token_hex(6)
-    environment = {**os.environ, "TEXTFOLD_PORT": str(port)}
+    environment = {**os.environ, "TEXTFOLD_PORT": str(port), "TEXTFOLD_TAILSCALE_HOST": TAILSCALE_HOST}
     command = ["docker", "compose", "-p", project, "-f", "compose.yml"]
 
     def compose(*args, online=False, check=True):
@@ -113,6 +114,8 @@ def main():
         assert status == 200, status
         path = "/p/" + json.loads(body)["paper"]
         assert b"Docker smoke test" in request(port, path, password=password)[1]
+        assert request(port, path, host=TAILSCALE_HOST)[0] == 401
+        assert b"Docker smoke test" in request(port, path, password=password, host=TAILSCALE_HOST)[1]
 
         compose("down")
         compose("up", "-d", "--wait", "--wait-timeout", "120")

@@ -15,6 +15,7 @@ services:
     environment:
       TEXTFOLD_PORT: "${TEXTFOLD_PORT:-3017}"
       TEXTFOLD_NO_MODELS: "1"
+      TEXTFOLD_TAILSCALE_HOST: "${TEXTFOLD_TAILSCALE_HOST:-}"
     tmpfs:
       - /tmp:rw,nosuid,nodev,mode=1777
     volumes:
