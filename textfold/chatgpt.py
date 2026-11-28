@@ -19,13 +19,9 @@ import uuid
 
 from . import store
 from ._storage_layout import DirectoryFiles
+from .openai_transport import CALLBACK, DISCOVERY, ISSUER, RESOURCE, SOCKET_ENV, TOKEN, open_request
 
-ISSUER = "https://auth.openai.com"
-RESOURCE = "https://api.openai.com/v1"
 AUTH = ISSUER + "/api/accounts/authorize"
-TOKEN = ISSUER + "/api/accounts/oauth/token"
-DISCOVERY = ISSUER + "/.well-known/openid-configuration"
-CALLBACK = "/oauth/chatgpt"
 PLAN = "chatgpt.tokens.use.direct"
 SCOPES = "openid profile email offline_access resource.invoke " + PLAN
 MODEL_PREFIX = "chatgpt-plan/"
@@ -120,6 +116,8 @@ def _open(url, *, form=None, body=None, token=None, timeout=20):
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, headers=headers)
     try:
+        if socket_path := os.environ.get(SOCKET_ENV):
+            return open_request(socket_path, req, timeout)
         return urllib.request.build_opener(_NoRedirect()).open(req, timeout=timeout)
     except urllib.error.HTTPError as error:
         with error:

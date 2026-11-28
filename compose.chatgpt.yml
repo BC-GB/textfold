@@ -1,0 +1,36 @@
+services:
+  textfold:
+    network_mode: none
+    environment:
+      TEXTFOLD_NO_MODELS: ""
+      TEXTFOLD_OPENAI_SOCKET: /run/textfold-openai/gateway.sock
+    depends_on:
+      openai:
+        condition: service_healthy
+    volumes:
+      - openai-socket:/run/textfold-openai:ro
+
+  openai:
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: openai
+    networks: [openai-egress]
+    volumes:
+      - openai-socket:/run/textfold-openai
+    healthcheck:
+      test: [CMD, python, -I, -B, /opt/textfold-docker/openai_transport.py, check]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  openai-socket:
+
+networks:
+  openai-egress:
