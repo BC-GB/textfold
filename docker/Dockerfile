@@ -1,6 +1,10 @@
 FROM python:3.12.16-slim-bookworm@sha256:44cf1793efa7c7a476bb0f2cff81443f4a072c90c1cb127e2924933daa3e8c64 AS browser
 
-RUN groupadd --gid 10001 textfold \
+RUN sed -i 's|http://deb.debian.org/|https://deb.debian.org/|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o APT::Update::Error-Mode=any update \
+    && DEBIAN_FRONTEND=noninteractive apt-get --yes --no-install-recommends upgrade \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 textfold \
     && useradd --uid 10001 --gid 10001 --home-dir /data/home --no-create-home --shell /usr/sbin/nologin textfold \
     && install -d -m 0755 /opt/textfold-docker \
     && install -d -o textfold -g textfold -m 0700 /run/textfold-relay
